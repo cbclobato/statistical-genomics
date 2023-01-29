@@ -1,0 +1,8 @@
+# Download the file for ubuntu system
+wget http://ftp-trace.ncbi.nlm.nih.gov/sra/sdk/3.0.2/sratoolkit.3.0.2-ubuntu64.tar.gz
+
+# Unzip the archive
+tar xzvf sratoolkit.3.0.2-ubuntu64.tar.gz
+
+# Modify your .bashrc file so that when you type "fastq-dump" , for example, it calls the program
+export PATH=$PATH:/sratoolkit.3.0.3-ubuntu64/bin 
