@@ -1,0 +1,360 @@
+---
+title: "SNP and INDEL Analysis"
+author: "Carolina Lobato"
+date: "2022-01-14"
+output: html_document
+---
+
+# Exercise 10
+
+# 1 Variant Calling and Annotation
+
+## 1.1 Data set
+
+This tutorial will take you through the process of calling variants with GATK using cattle whole genome sequencing data.
+
+The GATK is the industry standard for identifying SNPs and indels in germline DNA and RNAseq data.
+
+BWA is a software package for mapping low-divergent sequences against a large reference.
+
+## 1.2 Tools
+
+```{bash}
+conda install -c bioconda vcftools
+sudo apt install samtools
+sudo apt install neovim
+docker pull broadinstitute/gatk
+docker pull ensemblorg/ensembl-vep
+```
+
+## 1.3 Variant calling with GATK
+
+### 1.3.1 Preparing the reference genome for use with GATK
+
+Examine the BAM file (via samtools view). What is the name of the sequence to which the reads have been mapped?
+
+> Bos taurus genome (UMD 3.1 assembly), chromosome 4, centered on the Leptin gene.
+
+```{bash}
+samtools view Data/SRR1188706_Chr4.bam | head
+samtools view Data/SRR1262533_Chr4.bam | head
+```
+
+Uncompress the FASTA file and modify the name of the sequence(s) in it to match the BAM files.
+
+```{bash}
+gunzip Data/Bos_taurus.UMD3.1.dna.chromosome.4.fa.gz
+```
+
+```{bash}
+head -10 Data/Bos_taurus.UMD3.1.dna.chromosome.4.fa
+```
+
+```{bash}
+# vim Bos_taurus.UMD3.1.dna.chromosome.4.fa 
+# a, esc
+# :wq
+```
+
+```{bash}
+head -10 Data/Bos_taurus.UMD3.1.dna.chromosome.4.fa
+```
+
+Use SAMtools to sort and index the resulting BAM file.
+
+```{bash}
+samtools faidx Data/Bos_taurus.UMD3.1.dna.chromosome.4.fa
+```
+
+Now use Picard to generate the dictionary: Creates a sequence dictionary for a reference sequence!
+
+```{bash}
+java -jar tools/picard.jar CreateSequenceDictionary \
+  -R Data/Bos_taurus.UMD3.1.dna.chromosome.4.fa \
+  -O Data/Bos_taurus.UMD3.1.dna.chromosome.4.dict
+```
+
+### 1.3.2 Sorting and indexing the BAM files
+
+```{bash}
+for FILE in Data/SRR*Chr4.bam; do
+  OUTPUT=$(echo $FILE | sed "s/\.bam/\.sorted\.bam/")
+  samtools sort $FILE -o $OUTPUT
+  samtools index $OUTPUT
+done
+```
+
+### 1.3.3 Mark duplicates
+
+```{bash}
+for FILE in Data/SRR*Chr4.sorted.bam; do
+  OUTPUT=$(echo $FILE | sed "s/\.sorted.bam/\.sorted\.dupMarked\.bam/")
+  java -jar tools/picard.jar MarkDuplicates \
+  -I $FILE \
+  -O $OUTPUT \
+  -M ${OUTPUT}_metrics.txt
+done
+```
+
+Sort and index (again why?)
+
+```{bash}
+for FILE in Data/SRR*Chr4.sorted.dupMarked.bam; do
+  samtools sort $FILE -o $FILE
+  samtools index $FILE
+done
+```
+
+**What proportion of the reads are duplicates?**
+
+> SRR1262533 = 0.029359
+> SRR1188706 = 0.004611
+
+### 1.3.4 Base Quality Score Recalibration (BQSR)
+
+BQSR adjusts the base quality scores so that they more accurately represent the probability of having called the wrong base. BQSR requires a set of known variants.
+
+```{bash}
+wget ftp://ftp.ebi.ac.uk/pub/databases/nextgen/bos/variants/population_sites/UGBT.population_sites.UMD3_1.20140307.vcf.gz
+mv UGBT.population_sites.UMD3_1.20140307.vcf.gz Data/
+```
+
+Since we are only working with reads mapped to chromosome 4, the variants
+
+on this chromosome could be extracted using VCFtools:
+
+```{bash}
+~/miniconda3/envs/StatGen/bin/vcftools \
+--gzvcf data/UGBT.population_sites.UMD3_1.20140307.vcf.gz \
+--chr Chr4 \
+--recode \
+--out Data/UGBT.population_sites.UMD3_1.20140307.Chr4
+```
+
+Check the manual for the meaning of the four arguments.
+
+> \--gzvcf takes the input file name
+> \--chr chromosome position filtering
+> \--recode used to generate a new file in either VCF or BCF from the input VCF or BCF file after applying the filtering options specified by the user.
+> \--out takes the output file name
+
+Index the VCF file:
+
+```{bash}
+ROOT=/tmp
+docker run --rm \
+  -w $ROOT \
+  -v "$PWD":"$ROOT" \
+  broadinstitute/gatk \
+  gatk IndexFeatureFile \
+  --input Data/UGBT.population_sites.UMD3_1.20140307.Chr4.recode.vcf
+```
+
+Use this file of known sites to compute the statistics for BQSR:
+
+```{bash}
+ROOT="/tmp"
+for FILE in Data/SRR*.sorted.dupMarked.bam; do
+OUTPUT=$(echo $FILE | sed "s/\.sorted\.dupMarked\.bam//")
+docker run --rm \
+  -w $ROOT \
+  -v "$PWD":"$ROOT" \
+  broadinstitute/gatk \
+  gatk BaseRecalibrator \
+  -I $FILE \
+  -R Data/Bos_taurus.UMD3.1.dna.chromosome.4.fa \
+  --known-sites Data/UGBT.population_sites.UMD3_1.20140307.Chr4.recode.vcf \
+  -O ${OUTPUT}_BaseRecalibrator.table
+done
+```
+
+And apply the recalibration:
+
+```{bash}
+ROOT="/tmp"
+for FILE in Data/SRR*.sorted.dupMarked.bam; do
+  OUTPUT=$(echo $FILE | sed "s/\.sorted\.dupMarked\.bam/\.sorted\.dupMarked\.recal\.bam/")
+  TABLE=$(echo $FILE | sed "s/\.sorted\.dupMarked\.bam//")_BaseRecalibrator.table
+  docker run --rm \
+    -w $ROOT \
+    -v "$PWD":"$ROOT" \
+    broadinstitute/gatk \
+    gatk ApplyBQSR \
+    -I $FILE \
+    -R Data/Bos_taurus.UMD3.1.dna.chromosome.4.fa \
+    --bqsr-recal-file $TABLE \
+    -O $OUTPUT
+done
+```
+
+### 1.3.5 Variant calling
+
+Since the BAM files only contains reads mapped to a small region of the cow genome, we will restrict variant calling to this region.
+
+To do this, we first need to create a target file, defining the region of interest. Using a text editor, store the chromosome, start position, and end position in a file called "targetRegion.bed": Chr4 91249874 95266624
+
+```{bash}
+echo "Chr4 91249874 95266624" > targetRegion.bed
+cat targetRegion.bed
+```
+
+We will then use this targetRegion.bed with the --L flag to restrict calling to this region. If you wanted to call variants across the whole genome you would just leave this out:
+
+```{bash}
+ROOT="/root"
+for FILE in Data/SRR*.sorted.dupMarked.recal.bam; do
+  OUTPUT=$(echo $FILE | sed "s/\.sorted\.dupMarked\.recal\.bam//")
+  docker run --rm \
+    -w $ROOT \
+    -v "$PWD":"$ROOT" \
+    broadinstitute/gatk \
+    gatk HaplotypeCaller \
+    -R Data/Bos_taurus.UMD3.1.dna.chromosome.4.fa \
+    -L targetRegion.bed \
+    -I $FILE \
+    --dbsnp Data/UGBT.population_sites.UMD3_1.20140307.Chr4.recode.vcf \
+    -O ${OUTPUT}_HaplotypleCaller.vcf
+done
+```
+
+## 1.4 Variant annotation
+
+VEP (variant effect predictor) is a commonly used tool to annotate genetic variants. To speed up annotation, you could run VEP specifying the location of a VEP local cache that has been installed on your computer. We will connect to the Ensembl servers to get this information.
+
+A ***haplotype*** is a physical grouping of genomic variants (or polymorphisms) that tend to be inherited together.
+
+```{bash}
+ROOT="/opt/vep/.vep"
+for FILE in Data/SRR*_HaplotypleCaller.vcf; do
+  OUTPUT=$(echo $FILE | sed "s/_HaplotypleCaller.vcf//")
+  docker run --rm \
+    --name vep \
+    -w $ROOT \
+    -v "$PWD":"$ROOT" \
+    --user $(id -u) \
+    ensemblorg/ensembl-vep \
+    vep --database \
+    --species bos_taurus \
+    --vcf -i $FILE \
+    -o ${OUTPUT}_vep.vcf \
+    --force_overwrite
+done
+```
+
+-   Have a look at the html output file. How many missense variants were identified?
+
+    -   SRR1188706 192 with 94 that are severe
+
+    -   SRR1262533 105 with 53 that are severe
+
+-   Check the manual and work out how to add SIFT scores to the output vcf. You may need to delete the previous output file if using the same name. What proportion of the missense variants are predicted to be deleterious with higher confidence?
+
+    ```{bash}
+    ROOT="/opt/vep/.vep"
+    for FILE in Data/SRR*_HaplotypleCaller.vcf; do
+      OUTPUT=$(echo $FILE | sed "s/_HaplotypleCaller.vcf//")
+      docker run --rm \
+        --name vep \
+        -w $ROOT \
+        -v "$PWD":"$ROOT" \
+        --user $(id -u) \
+        ensemblorg/ensembl-vep \
+        vep --database \
+        --species bos_taurus \
+        --vcf -i $FILE \
+        -o ${OUTPUT}_vep2.vcf \
+        --sift s \
+        --force_overwrite
+    done
+    ```
+
+> -   SRR1188706 53,6%
+>
+> -   SRR1262533 54,3%
+
+## 1.5 Variant filtering
+
+VEP comes with a script that can be used to filter for specific types of variants.
+
+```{bash}
+ROOT="/opt/vep/.vep"
+for FILE in Data/SRR*_vep.vcf; do
+  OUTPUT=$(echo $FILE | sed "s/_vep\.vcf//")
+  docker run --rm \
+    --name vep \
+    -w $ROOT \
+    -v "$PWD":"$ROOT" \
+    --user $(id -u) \
+    ensemblorg/ensembl-vep \
+    filter_vep \
+    -I $FILE \
+    --format vcf \
+    -o ${OUTPUT}_missense_only.vcf \
+    --filter "Consequence matches missense" \
+    --force_overwrite
+done  
+```
+
+Get a count of the number of coding variants in a specific gene (hint take a look [here](http://www.ensembl.org/info/docs/tools/vep/script/vep_filter.html)).
+
+```{bash}
+
+ROOT="/opt/vep/.vep"
+for FILE in Data/SRR*_vep.vcf; do
+  OUTPUT=$(echo $FILE | sed "s/_vep\.vcf//")
+  docker run --rm \
+    --name vep \
+    -w $ROOT \
+    -v "$PWD":"$ROOT" \
+    --user $(id -u) \
+    ensemblorg/ensembl-vep \
+    filter_vep \
+    -I $FILE \
+    --format vcf \
+    -o ${OUTPUT}_missense_only.vcf \
+    --filter "SYMBOL matches LRRC4" \
+    --force_overwrite
+done 
+```
+
+## 1.6 Variant metrics
+
+As well as getting various summary statistics it can also be used to convert VCF files to different formats.
+
+```{bash}
+for FILE in Data/SRR*_vep.vcf; do
+  OUTPUT=$(echo $FILE | sed "s/_vep\.vcf//")
+  ~/miniconda3/envs/StatGen/bin/vcftools \
+    --vcf $FILE \
+    --freq \
+    --out ${OUTPUT}_freqs
+done
+```
+
+Examine the output files. To get counts of each type of change e.g. (A\<-\>C) and the total number of transitions and transversions.
+
+```{bash}
+for FILE in Data/SRR*_vep.vcf; do
+  OUTPUT=$(echo $FILE | sed "s/_vep\.vcf//")
+  ~/miniconda3/envs/StatGen/bin/vcftools \
+  --vcf $FILE \
+  --TsTv-summary \
+  --out ${OUTPUT}_TsTv
+done
+```
+
+-   Which base changes (e.g. A/C, A/G, etc) are observed most often in this data? Why might these be most common ([hint](https://en.wikipedia.org/wiki/Deamination)).
+
+    > -   SRR1188706 Ts 5434 counts
+    >
+    > -   SRR1262533 Ts 3133 counts
+    >
+    >     **Transition is point mutation that changes a purine nucleotide to another purine (A ↔ G), or a pyrimidine nucleotide to another pyrimidine (C ↔ T)**.
+    >
+    > -   A known result of **cytosine methylation** is the increase of C-to-T transition mutations through the process of deamination.
+    >
+    > -   An epigenetic process that occurs in the body when too much protein is produced to break down the aminoacids.
+
+-   How can you output a new VCF file with only the genotypes for the first sample?
+
+    > vcftools has a command: - -diff-site

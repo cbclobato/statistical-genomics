@@ -1,0 +1,264 @@
+---
+title: "Assignment NGS"
+author: "Carolina Lobato"
+date: "2022-11-12"
+output: html_document
+---
+
+# Introduction to Next-Generation Sequencing
+
+## Exercise 1
+
+```{bash}
+tar -xzvf tools.tar.gz
+```
+
+```{bash}
+tar -xzvf data.tar.gz
+cd data
+tar -xzvf 2cells.tar.gz
+tar -xzvf 6h.tar.gz
+```
+
+```{bash}
+head data/2cells_1.fastq
+```
+
+```{bash}
+wc -l data/2cells_1.fastq data/2cells_2.fastq data/6h_1.fastq data/6h_2.fastq | cut -f 2 -d ' '
+```
+
+How many reads are there in each FASTQ file?
+
+```{bash}
+awk ' END { print NR / 4 } ' data/2cells_1.fastq
+awk ' END { print NR / 4 } ' data/2cells_2.fastq
+awk ' END { print NR / 4 } ' data/6h_1.fastq
+awk ' END { print NR / 4 } ' data/6h_2.fastq
+```
+
+5. How long are the reads in the FASTQ file?
+
+```{bash}
+awk ' NR%4 == 2 {lengths[length($0)]++} END {for (l in lengths) {print l, lengths[l]}} ' data/2cells_1.fastq
+awk ' NR%4 == 2 {lengths[length($0)]++} END {for (l in lengths) {print l, lengths[l]}} ' data/6h_1.fastq
+```
+
+```{bash}
+cd tools
+unzip fastqc_v0.11.5.zip
+chmod +x FastQC/fastqc
+```
+
+## Exercise 2
+
+
+```{bash}
+mkdir -p outputs/FastQC
+export OUTPUT=outputs/FastQC
+tools/FastQC/fastqc -o $OUTPUT -t 2 --extract --nogroup data/2cells_*.fastq
+tools/FastQC/fastqc -o $OUTPUT -t 2 --extract --nogroup data/6h_*.fastq
+```
+
+```{bash}
+ls output/FastQC
+```
+
+```{bash}
+cd tools
+unzip Trimmomatic-0.36.zip
+```
+
+```{bash}
+java -jar tools/Trimmomatic-0.36/trimmomatic-0.36.jar -h
+```
+## Exercise 3
+
+```{bash}
+export OUTPUT=outputs/trim
+mkdir -p $OUTPUT
+java -jar tools/Trimmomatic-0.36/trimmomatic-0.36.jar PE \
+-threads 4 -phred33 \
+data/2cells_1.fastq data/2cells_2.fastq \
+$OUTPUT/2cells_1.trim.fastq $OUTPUT/2cells_1.trim.unpaired.fastq \
+$OUTPUT/2cells_2.trim.fastq $OUTPUT/2cells_2.trim.unpaired.fastq \
+LEADING:20 TRAILING:20 AVGQUAL:20 MINLEN:25
+```
+
+
+Input Read Pairs: 786742 Both Surviving: 770010 (97.87%) Forward Only Surviving: 14831 (1.89%) Reverse Only Surviving: 1596 (0.20%) Dropped: 305 (0.04%)
+
+2. How many reads are there in the trimmed FASTQ files?
+```{bash}
+awk ' END { print NR / 4 } ' outputs/TRIM/2cells_1.trim.fastq
+```
+
+3. Note that the two reads in a pair have almost the same headers. What is the difference?
+```{bash}
+echo ">>> 2cells_1.trim.fastq"
+head -4 outputs/TRIM/2cells_1.trim.fastq
+echo ">>> 2cells_2.trim.fastq"
+head -4 outputs/TRIM/2cells_2.trim.fastq
+```
+
+4. Count the number of the reads that have lost the other read of the pair during the trimming and filtering process. Unpaired reads will be ignored for the rest of the analysis. However, in principle, they could be used by treating them as single-end reads.
+```{bash}
+awk ' END { print NR / 4 } ' outputs/TRIM/2cells_1.trim.unpaired.fastq
+```
+
+5. Run FastQC on the trimmed FASTQ files and compare the output reports against those for the unprocessed FASTQ files.
+```{bash}
+export OUTPUT=outputs/FastQC
+tools/FastQC/fastqc -o $OUTPUT -t 2 --extract --nogroup outputs/TRIM/2cells_*.trim.fastq
+```
+
+6. Repeat the same steps for the 6h-zebrafish embryos FASTQ files.
+```{bash}
+export OUTPUT=outputs/trim
+mkdir -p $OUTPUT
+java -jar tools/Trimmomatic-0.36/trimmomatic-0.36.jar PE \
+-threads 4 -phred33 \
+data/6h_1.fastq data/6h_2.fastq \
+$OUTPUT/6h_1.trim.fastq $OUTPUT/6h_1.trim.unpaired.fastq \
+$OUTPUT/6h_2.trim.fastq $OUTPUT/6h_2.trim.unpaired.fastq \
+LEADING:20 TRAILING:20 AVGQUAL:20 MINLEN:25
+export OUTPUT=outputs/FastQC
+tools/FastQC/fastqc -o $OUTPUT -t 2 --extract --nogroup outputs/TRIM/6h_*.trim.fastq
+```
+
+## Exercise 4
+
+```{bash}
+# unzip tools/hisat2-2.2.1-Linux_x86_64.zip -d tools/
+# http://daehwankimlab.github.io/hisat2/download/
+# https://cloud.biohpc.swmed.edu/index.php/s/zMgEtnF6LjnjFrr/download
+```
+
+
+```{bash}
+chmod +x tools/hisat2-2.2.1/hisat2-build
+```
+
+
+```{bash}
+tools/hisat2-2.2.1/hisat2-build --help
+```
+
+```{bash}
+gunzip data/danRer10.chr12.fa.gz
+```
+
+
+```{bash}
+mkdir -p outputs/HISAT2
+tools/hisat2-2.2.1/hisat2-build data/danRer10.chr12.fa outputs/HISAT2/danRer10.chr12
+```
+
+fchr[A]: 0
+fchr[C]: 15613763
+fchr[G]: 24507100
+fchr[T]: 33430941
+fchr[$]: 49126065
+(...)
+Headers:
+    len: 49126065
+    gbwtLen: 49126066
+    nodes: 49126066
+    sz: 12281517
+    gbwtSz: 12281517
+    lineRate: 6
+    offRate: 4
+    offMask: 0xfffffff0
+    ftabChars: 10
+    eftabLen: 0
+    eftabSz: 0
+    ftabLen: 1048577
+    ftabSz: 4194308
+    offsLen: 3070380
+    offsSz: 12281520
+    lineSz: 64
+    sideSz: 64
+    sideGbwtSz: 48
+    sideGbwtLen: 192
+    numSides: 255865
+    numLines: 255865
+    gbwtTotLen: 16375360
+    gbwtTotSz: 16375360
+    reverse: 0
+    linearFM: Yes
+    
+```{bash}
+chmod +x tools/hisat2-2.2.1/hisat2
+```
+
+## Exercise 5
+
+```{bash}
+mkdir -p outputs/SAM
+tools/hisat2-2.2.1/hisat2 -q \
+-x outputs/HISAT2/danRer10.chr12 \
+-1 outputs/trim/2cells_1.trim.fastq \
+-2 outputs/trim/2cells_2.trim.fastq \
+-S outputs/SAM/2cells.sam &> outputs/SAM/summary.log
+cat outputs/SAM/summary.log
+```
+1. **How many reads aligned concordantly exactly one time?** 
+683292 (88.74%) aligned concordantly exactly 1 time
+
+2. **Examine the files that HISAT2 is writing.**
+```{bash}
+head outputs/SAM/2cells.sam
+```
+
+3. **Map the remaining libraries.** Done
+```{bash}
+# 
+```
+
+## Exercise 6
+
+```{bash}
+# tar xvjf tools/samtools-bcftools-htslib-1.0_x64-linux.tar.bz2
+# Download samtools source to tools/
+cd tools/samtools-1.16.1
+./configure --prefix=$(pwd)/bin
+make 
+make install
+```
+
+```{bash}
+chmod u+x tools/samtools-1.16.1/samtools
+```
+
+
+```{bash}
+mkdir -p outputs/BAM
+tools/samtools-1.16.1/samtools view -bS outputs/SAM/2cells.sam > outputs/BAM/2cells.bam
+```
+
+
+```{bash}
+tools/samtools-1.16.1/samtools view outputs/BAM/2cells.bam | head -10
+```
+
+```{bash}
+tools/samtools-1.16.1/samtools sort -o outputs/BAM/2cells_sorted.bam outputs/BAM/2cells.bam
+```
+
+```{bash}
+tools/samtools-1.16.1/samtools index outputs/BAM/2cells_sorted.bam
+```
+
+**What do you see in IGV?** Expression per gene. (?)
+
+## Exercise 7
+
+Create bash script for this assignment.
+
+```{bash}
+./rnaseq.sh 2cells
+```
+
+```{bash}
+./rnaseq.sh 6h
+```

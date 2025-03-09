@@ -1,0 +1,261 @@
+---
+title: "ChIP-seq Data Analysis"
+author: "Carolina Lobato"
+date: "2022-11-26"
+output: html_document
+---
+
+# Statistical Genomics: Exercise 6
+
+## 2. Peak calling with MACS2
+
+```{bash}
+~/miniconda3/envs/StatGen/bin/macs2 -h
+```
+
+```{bash}
+~/miniconda3/envs/StatGen/bin/macs2 callpeak -h
+```
+
+##### 2. Create a folder Lab6/Outputs/macs2/ for the output generated from MACS2.
+
+```{bash}
+pwd
+mkdir -p Lab6/Outputs/macs2/
+```
+
+##### 3. Run MACS2 as follows
+
+```{bash}
+ls Lab6/Data/*/*
+```
+
+```{bash}
+for sample in Data/*/*.Chr12.bam; do
+  control=${sample%/*.bam}/*.control.bam
+  ~/miniconda3/envs/StatGen/bin/macs2 callpeak \
+  -t $sample \
+  -c $control \
+  -f BAM \
+  -g 2.8e9 \
+  -n Lab6/Outputs/macs2/${sample#Data/*/}
+done
+```
+
+### 2.1. MACS2 Output files
+
+##### 5. How many peaks were called in each sample?
+
+```{bash}
+cd Lab6/macs2/Outputs
+wc -l ENCFF032JWA.Chr12.bam_peaks.narrowPeak
+wc -l ENCFF181MED.Chr12.bam_peaks.narrowPeak
+wc -l ENCFF252WJR.Chr12.bam_peaks.narrowPeak
+wc -l ENCFF696NWL.Chr12.bam_peaks.narrowPeak
+```
+
+##### 6. Start R and run the \_model.R scripts from the command line. The script should produce a .pdf file in your output directory. Open the file.
+
+```{r}
+source("Lab6/Outputs/macs2/ENCFF032JWA.Chr12.bam_model.r")
+source("Lab6/Outputs/macs2/ENCFF181MED.Chr12.bam_model.r")
+source("Lab6/Outputs/macs2/ENCFF252WJR.Chr12.bam_model.r")
+source("Lab6/Outputs/macs2/ENCFF696NWL.Chr12.bam_model.r")
+```
+
+## 3. Differential binding analysis with R
+
+##### 7. If necessary, install and load the DiffBind R/Bioconductor package.
+
+```{r}
+if (!require("BiocManager", quietly = TRUE))
+    install.packages("BiocManager")
+BiocManager::install("DiffBind")
+```
+
+### 3.1. Consensus peakset (Occupancy Analysis)
+
+##### 8. Generate a comma-separated value (.csv) metafile samples.csv containing following columns, and one line for each sample.
+
+The actual peaksets can be read using the dba() function of the DiffBind package:
+
+```{r}
+library(DiffBind)
+peaksets <- "Lab6/Data/samples.csv"
+encode <- dba(sampleSheet = peaksets)
+encode # 4 Samples, 143 sites in matrix (798 total)
+```
+
+9\. How many peaksets have you read? How many peaks are contained in each peakset? How many consensus peaks have been computed?
+
+```{r}
+encode$peaks[[1]][c(1:5),]
+```
+
+```{r}
+encode$merged # 465
+```
+
+##### 10. Based on the consensus peaks and their scores (here, −log 10 of the MACS2 P-values), generate a heatmap displaying the Pearson correlation coefficients between pairs of samples:
+
+```{r}
+dba.plotHeatmap(encode, margin = 15)
+```
+
+• Do the samples cluster as expected?
+
+> yes, samples from the same cell type are clustering together.
+
+### 3.2. Counting reads - Binding affinity matrix
+
+```{r}
+encode <- dba.count(encode, summits = 250, bParallel = F)
+encode # 4 Samples, 143 sites in matrix
+```
+
+##### 11. What is the FRiP? How do you interpret this result?
+
+> It is a ratio of those reads that map in the peak of interest over the total reads. Since most reads do not fall into peaks, this ratio is low. While FRIP scores in the ENCODE Data tend to range between 0.2 to 0.5, a minimum FRIP score of 0.3 is suggested.
+
+##### 12. Based on the binding affinities of the consensus peaks, generate a heatmap displaying the Pearson correlation coefficients between pairs of samples.
+
+```{r}
+dba.plotHeatmap(encode, margin = 15)
+```
+
+Do the samples cluster as expected? Are there any differences compared to the analysis you performed in the previous section?
+
+> yes. The negative correlation disappeared and the correlation is now higher that 0.8.
+
+##### 13. A principal component analysis (PCA) based on the affinity scores of all consensus peaks can be obtained with the *dba.plotPCA* function.
+
+```{r}
+dba.plotPCA(encode, label = DBA_CONDITION)
+```
+
+• What do you conclude from the PCA?
+
+> PC1 shows the differences between cell types and the PC2 describes the differences between replicates (which are lower).
+
+### 3.3. Differential binding affinity analysis
+
+To specify the sample groups you can use the dba.contrast() function.
+
+```{r}
+encode <- dba.contrast(encode, categories = DBA_CONDITION, minMembers = 2)
+```
+
+##### 14. How many sample groups do you expect? Which samples will be in each group?
+
+```{r}
+dba.show(encode, bContrasts = TRUE)
+```
+
+The differential analysis is executed by the dba.analyze() function:
+
+```{r}
+encode <- dba.analyze(encode)
+encode
+```
+
+##### 15. Generate a heatmap based on the DB peaks.
+
+```{r}
+dba.plotHeatmap(encode, margin = 15, contrast = 1)
+```
+
+##### 16. A PCA based on the affinity scores of the DB peaks can be obtained as follows.
+
+```{r}
+dba.plotPCA(encode, contrast = 1, label = DBA_CONDITION)
+```
+
+• What do you conclude from the heatmap and the PCA?
+
+> That the analysis of binding sites yields differentially bound sample groups.
+
+You can use the dba.report() function to retrieve the differentially bound (DB) peaks.
+
+```{r}
+encode.DB <- dba.report(encode, contrast = 1)
+x <- as.Data.frame(encode.DB); x
+dim(x) # number of DB sites
+```
+
+##### 17. Convert the object encode.DB into a Data frame and print to a file.
+
+```{r}
+library(dplyr)
+# Create bed files for each keeping only significant peaks (p < 0.05)
+enrich_pvalue1 <- as.Data.frame(encode.DB) %>%
+select(p.value, seqnames, start, end, Fold) %>%
+filter(p.value < 0.05 & Fold > 0) %>%
+select(p.value, seqnames, start, end, Fold)
+# Write to file
+write.table(enrich_pvalue1, file = "Lab6/Outputs/K562-pvalue.bed", sep = "\t", quote = F, row.names = T, col.names = F)
+
+# Create bed files for each keeping only significant peaks (p < 0.05)
+enrich_pvalue2 <- as.Data.frame(encode.DB) %>%
+select(p.value, seqnames, start, end, Fold) %>%
+filter(p.value < 0.05 & Fold < 0) %>%
+select(p.value, seqnames, start, end, Fold)
+# Write to file
+write.table(enrich_pvalue2, file = "Lab6/Outputs/H1hESC-pvalue.bed", sep = "\t", quote = F, row.names = T, col.names = F)
+```
+
+##### 18. How many of the consensus peaks are more strongly bound by POU5F1 in hESC cells? How many of the consensus peaks are more strongly bound by POU5F1 in K562 cells?
+
+```{bash}
+wc -l Lab6/Outputs/K562-pvalue.bed
+wc -l Lab6/Outputs/H1hESC-pvalue.bed 
+```
+
+##### 19. Create a BED file for each set of diferentially bound peaks. We will write these regions to file and use as input for downstream visualization.
+
+```{r}
+library(dplyr)
+# Create bed files for each keeping only significant peaks (FDR < 0.05)
+enrich_pvalue3 <- as.Data.frame(encode.DB) %>%
+select(p.value, seqnames, start, end) %>%
+filter(p.value < 0.05) %>%
+select(seqnames, start, end)
+# Write to file
+write.table(enrich_pvalue3, file = "Lab6/Outputs/enriched-pvalue.bed", sep = "\t", quote = F,
+row.names = F, col.names = F)
+
+# Create bed files for each keeping only significant peaks (FDR < 0.05)
+enrich_FDR <- as.Data.frame(encode.DB) %>%
+select(FDR, seqnames, start, end) %>%
+filter(FDR < 0.05) %>%
+select(seqnames, start, end)
+# Write to file
+write.table(enrich_FDR, file = "Lab6/Outputs/enriched-FDR.bed", sep = "\t", quote = F,
+row.names = F, col.names = F)
+```
+
+##### 20. To visualize our Outputs in igv, first we need to generate index files with samtools. For each sample, generate a corresponding index file with *samtools index IN.bam OUT.bai*.
+
+```{bash}
+Tools/samtools-1.16.1/samtools index Data/hESC/ENCFF181MED.Chr12.bam Data/hESC/ENCFF181MED.Chr12.bai
+Tools/samtools-1.16.1/samtools index Data/hESC/ENCFF696NWL.Chr12.bam Data/hESC/ENCFF696NWL.Chr12.bai
+Tools/samtools-1.16.1/samtools index Data/hESC/ENCFF356DXM.Chr12.control.bam Data/hESC/ENCFF356DXM.Chr12.control.bai
+Tools/samtools-1.16.1/samtools index Data/K562/ENCFF032JWA.Chr12.bam Data/K562/ENCFF032JWA.Chr12.bai
+Tools/samtools-1.16.1/samtools index Data/K562/ENCFF252WJR.Chr12.bam Data/K562/ENCFF252WJR.Chr12.bai
+Tools/samtools-1.16.1/samtools index Data/K562/ENCFF335IPE.Chr12.control.bam Data/K562/ENCFF335IPE.Chr12.control.bai
+```
+
+```{bash}
+for file in Data/*/*.bam; do
+  Tools/samtools-1.16.1/samtools index $file $file.bai
+done
+```
+
+##### 21. Load the BED file containing the differentially bound peaks as well as one mapping bam file for each cell line and the controls into igv (<https://software.broadinstitute.org/software/igv/download>)
+
+<https://igv.org/app/>
+
+##### Zoom into the first DB region in the genome: chr12:11,761,870-11,762,370.
+
+• Can you make sense of what you see when comparing to the encode.DB Granges object?
+
+• Explore other positions on Chr12 according to the bed file.

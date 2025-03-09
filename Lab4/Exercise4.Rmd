@@ -1,0 +1,454 @@
+---
+title: "Introduction to Next-Generation Sequencing"
+author: "Carolina Lobato"
+date: "11/12/2022"
+output: html_document
+---
+
+# Statistical Genomics: Exercise 4
+
+## 4.1. Introduction
+
+The goal of this tutorial is to perform some preliminary tasks in the analysis of RNA-seq data. The data corresponds to zebrafish embryos at two different development stages. You will perform quality control, filter/trim low quality reads, and map the trimmed reads to the reference zebrafish genome assembly.
+
+### 4.1.1. RNA-seq analysis tools
+
+The tools required for the analysis are FastQC, Trimmomatic, HISAT2 and Samtools. **tools.tar.gz** contains all necessary binaries. If one tool might not work for you when using the binaries, please install the full version. These are command-line tools and only run under Unix-like operating systems.
+
+• Extract the files in tools.tar.gz:
+
+```{bash}
+cd Lab4
+tar -xzvf tools.tar.gz # This will produce a folder called Tools
+```
+
+## 4.2. Dataset
+
+To study the mechanisms regulating early development in zebrafish (*Danio rerio*), the Wellcome Trust Sanger Institute applied RNA-seq and generated comprehensive transcriptome profiles from a range of tissues and developmental stages. Sequencing was performed on the Illumina platform and generated paired-end sequence data using polyA-selected RNA. You will work with a subset of this dataset. The original data can be found at <http://www.ebi.ac.uk/ena/data/view/ERR022484> and [http://www.ebi.ac.uk/ena/data/view/ERR022485](http://www.ebi.ac.uk/ena/data/view/ERR022485.).
+
+#### Exercise 1
+
+1\. Extract the files in data.tar.gz:
+
+```{bash}
+tar -xzvf data.tar.gz # This will create a folder called Data
+```
+
+2\. Extract the FASTQ files in the data folder:
+
+```{bash}
+cd Data
+tar -xzvf 2cells.tar.gz
+tar -xzvf 6h.tar.gz
+```
+
+• 2cells_1.fastq and 2cells_2.fastq contain the paired-end RNA-seq sequencing reads of a 2-cell zebrafish embryo.
+
+-- 2cells_1.fastq has the forward reads;
+
+-- 2cells_2.fastq has the reverse reads.
+
+• 6h_1.fastq and 6h_2.fastq contain the paired-end RNA-seq sequencing reads of a zebrafish embryo 6 hours post-fertilization.
+
+-- 6h_1.fastq has the forward reads
+
+-- 6h_2.fastq has the reverse reads.
+
+3\. Use the head command to examine the beginning of the FASTQ files, e.g.:
+
+```{bash}
+head 2cells_1.fastq
+head 2cells_2.fastq
+head 6h_1.fastq
+head 6h_2.fastq
+```
+
+4\. How many reads are there in each FASTQ file?
+
+```{bash}
+awk '{s++}END{print s/4}' 2cells_1.fastq # 786742
+awk '{s++}END{print s/4}' 2cells_2.fastq # 786742
+awk '{s++}END{print s/4}' 6h_1.fastq # 835648
+awk '{s++}END{print s/4}' 6h_2.fastq # 835648
+```
+
+Use the wc ("word count") to count the number of lines in a file:
+
+```{bash}
+wc -l 2cells_1.fastq # 3146968
+wc -l 2cells_2.fastq # 3146968
+wc -l 6h_1.fastq # 3342592
+wc -l 6h_2.fastq # 3342592
+```
+
+5\. How long are the reads in the FASTQ files?
+
+```{bash}
+awk 'NR%4 == 2 {lengths[length($0)]++} END {for (l in lengths) {print l, lengths[l]}}' 2cells_1.fastq # 786742
+awk 'NR%4 == 2 {lengths[length($0)]++} END {for (l in lengths) {print l, lengths[l]}}' 2cells_2.fastq # 786742
+awk 'NR%4 == 2 {lengths[length($0)]++} END {for (l in lengths) {print l, lengths[l]}}' 6h_1.fastq # 835648
+awk 'NR%4 == 2 {lengths[length($0)]++} END {for (l in lengths) {print l, lengths[l]}}' 6h_2.fastq # 835648
+```
+
+## 4.3. Quality control
+
+We will use the tool FastQC to verify read quality.
+
+• Unzip fastqc_v0.11.5.zip in the tools folder:
+
+```{bash}
+cd ..
+cd Tools
+unzip fastqc_v0.11.5.zip # This will create a folder called FastQC
+```
+
+• Change to the FastQC folder and modify the permissions of the fastqc file to make it executable:
+
+```{bash}
+cd FastQC
+chmod +x fastqc
+```
+
+#### Exercise 2
+
+FastQC a java program that provides a simple way to do some quality control checks on raw sequencing data. Examine their example reports for good and bad Illumina data. Run FastQC on the **forward reads** of the 2-cell zebrafish embryo sample by typing the following command:
+
+• -o: the output folder; ensure that output folder exists before running FastQC.
+
+• -t: the number of threads to run in parallel.
+
+• --extract: instructs FastQC to extract the compressed output files.
+
+• --nogroup: instructs FastQC to show output data for each position in the read, instead of grouping neighboring positions (default).
+
+The last argument required by FastQC is the FASTQ file.
+
+• Note that you will need to include the complete paths to the tool and input file.
+
+1\. Run FastQC for each FASTQ file in the dataset. After running FastQC you should see two output files (a zip file and an html file) and a folder.
+
+```{bash}
+# mkdir -p Lab4/Outputs/FastQC
+# cd Lab4/Outputs/FastQC
+# mkdir untrimmed
+# cd ..
+# cd ..
+Tools/FastQC/fastqc -o Outputs/FastQC/untrimmed -t 2 --extract --nogroup Data/2cells_1.fastq
+Tools/FastQC/fastqc -o Outputs/FastQC/untrimmed -t 2 --extract --nogroup Data/2cells_2.fastq
+Tools/FastQC/fastqc -o Outputs/FastQC/untrimmed -t 2 --extract --nogroup Data/6h_1.fastq
+Tools/FastQC/fastqc -o Outputs/FastQC/untrimmed -t 2 --extract --nogroup Data/6h_2.fastq
+```
+
+• Use your favorite browser to open the html file.
+
+• Interpret the plots using with help of the FastQC manual ("FastQC_Manual.pdf").
+
+> **Per tile sequence quality:**
+>
+> **Per base sequence content:** If you see strong biases which change in different bases then this usually indicates an overrepresented sequence which is contaminating your library.
+>
+> **Per sequence GC content:** An unusually shaped distribution could indicate a contaminated library or some other kinds of biased subset.
+>
+> **Sequence duplication levels:** A low level of duplication may indicate a very high level of coverage of the target sequence, but a high level of duplication is more likely to indicate some kind of enrichment bias (e.g.: PCR over amplification). To cut down on the amount of information in the final plot any sequences with more than 10 duplicates are placed into the 10 duplicates category - so it's not unusual to see a small rise in this final category. If you see a big rise in this final category then it means you have a large number of sequences with very high levels of duplication.
+>
+> **Overrepresented sequences:** Indicates that the library is contaminated, or not as diverse as you expected.
+>
+> **Kmer content:** If you have a partial sequence which is appearing at a variety of places within your sequence then this won't be seen either by the per base content plot or the duplicate sequence analysis. This module counts the enrichment of every 5-mer within the sequence library. The graph will show the pattern of enrichment of that Kmer across the length of your reads at different points over your read length. Is it a general enrichment, or if there is a pattern of bias at different points over your read length? Any k-mer showing more than a 3 fold overall enrichment or a 5 fold enrichment at any given base position will be reported by this module.
+
+## 4.4. Trimming
+
+Trimmomatic is a java program that can apply various filters to exclude low quality reads, trim low quality bases from the read ends, and remove adapter remnants.
+
+Unzip Trimmomatic-0.36.zip in the tools folder:
+
+```{bash}
+cd Tools
+unzip Trimmomatic-0.36.zip # This will create a folder called Trimmomatic-0.36
+```
+
+To ask for help, type:
+
+```{bash}
+cd Tools/Trimmomatic-0.36
+java -jar trimmomatic-0.36.jar -h
+```
+
+The arguments for paired-end reads are the names of the FASTQ files with the forward and reverse reads (\<inputFile1\>\<inputFile2\>), the names of the output files for the paired and remaining unpaired reads after trimming the forward reads (\<outputFile1P\>\<outputFile1U\>) and reverse reads (\<outputFile2P\> \<outputFile2U\>). In addition, you will have to specify the parameters for the trimming and filtering.
+
+#### Exercise 3
+
+1\. Trim the reads in the FASTQ files corresponding to the **2-cell embryos** using:
+
+```{bash}
+# mkdir -p Lab4/Outputs/Trim
+java -jar tools/Trimmomatic-0.36/trimmomatic-0.36.jar \
+PE -threads 2 -phred33 \
+Data/2cells_1.fastq data/2cells_2.fastq \
+Outputs/Trim/2cells_1.trim.fastq output/Trim/2cells_1.trim.unpaired.fastq \
+Outputs/Trim/2cells_2.trim.fastq output/Trim/2cells_2.trim.unpaired.fastq \
+LEADING:20 TRAILING:20 AVGQUAL:20 MINLEN:25
+```
+
+The arguments are:
+
+• PE: reads are paired-end
+
+• -threads: number of threads
+
+• -phred33: quality encoding
+
+• LEADING: quality threshold for removing nucleotides from the 5' end
+
+• TRAILING: quality threshold for removing nucleotides from the 3' end
+
+• AVGQUAL: minimum average read quality (reads with an average quality lower than AVGQUAL will be discarded)
+
+• MINLEN: minimum read length (reads that are shorter than MINLEN after trimming will be discarded)
+
+• Note that you will need to include the complete paths to the tool and input files.
+
+• After Trimmomatic has run, you should see a report indicating the number of reads that passed the filters. **How many read pairs did?**
+
+> Input Read Pairs: 786742
+>
+> Both Surviving: 770010 (97.87%)
+>
+> Forward Only Surviving: 14831 (1.89%)
+>
+> Reverse Only Surviving: 1596 (0.20%)
+>
+> Dropped: 305 (0.04%)
+>
+> TrimmomaticPE: Completed successfully
+
+2\. How many reads are there in the trimmed FASTQ files? Verify that the trimmed FASTQ files for the forward and reverse reads contain the same number of reads.
+
+```{bash}
+cd Outputs/Trim
+awk '{s++}END{print s/4}' 2cells_1.trim.fastq # 770010
+awk '{s++}END{print s/4}' 2cells_2.trim.fastq # 770010
+```
+
+3\. Examine the header of the first read in the trimmed FASTQ files for the forward and reverse reads. The FASTQ files are sorted. Therefore, these will be the forward and reverse reads of a specific fragment, i.e., these two reads are paired. Note that the two reads in a pair have almost the same [headers]{.underline}. What is the difference?
+
+```{bash}
+cd Outputs/Trim
+head 2cells_1.trim.fastq # /1 
+head 2cells_2.trim.fastq # /2 
+```
+
+4\. Count the number of the reads that have lost the other read of the pair during the trimming and filtering process. Unpaired reads will be ignored for the rest of the analysis. However, in principle, they could be used by treating them as single-end reads.
+
+```{bash}
+cd output/Trim
+awk '{s++}END{print s/4}' 2cells_1.trim.unpaired.fastq # 14831
+awk '{s++}END{print s/4}' 2cells_2.trim.unpaired.fastq # 1596
+```
+
+5\. Run FastQC on the trimmed FASTQ files and compare the output reports against those for the unprocessed FASTQ files.
+
+```{bash}
+# cd Lab4/Outputs/FastQC
+# mkdir trimmed
+# cd ..
+# cd ..
+Tools/FastQC/fastqc -o Outputs/FastQC/trimmed -t 2 --extract --nogroup Outputs/Trim/2cells_1.trim.fastq
+Tools/FastQC/fastqc -o Outputs/FastQC/trimmed -t 2 --extract --nogroup Outputs/Trim/2cells_2.trim.fastq
+```
+
+6\. Repeat the same steps for the 6h-zebrafish embryos FASTQ files.
+
+```{bash}
+java -jar tools/Trimmomatic-0.36/trimmomatic-0.36.jar \
+PE -threads 2 -phred33 \
+Data/6h_1.fastq data/6h_2.fastq \
+Outputs/Trim/6h_1.trim.fastq output/Trim/6h_1.trim.unpaired.fastq \
+Outputs/Trim/6h_2.trim.fastq output/Trim/6h_2.trim.unpaired.fastq \
+LEADING:20 TRAILING:20 AVGQUAL:20 MINLEN:25
+```
+
+> Input Read Pairs: 835648
+>
+> Both Surviving: 801660 (95.93%)
+>
+> Forward Only Surviving: 29471 (3.53%)
+>
+> Reverse Only Surviving: 3804 (0.46%)
+>
+> Dropped: 713 (0.09%)
+>
+> TrimmomaticPE: Completed successfully
+
+```{bash}
+cd Lab4/Outputs/Trim
+awk '{s++}END{print s/4}' 6h_1.trim.fastq # 801660
+awk '{s++}END{print s/4}' 6h_2.trim.fastq # 801660
+```
+
+```{bash}
+cd Lab4/Outputs/Trim
+awk '{s++}END{print s/4}' 6h_1.trim.unpaired.fastq # 29471
+awk '{s++}END{print s/4}' 6h_2.trim.unpaired.fastq # 3804
+```
+
+```{bash}
+Tools/FastQC/fastqc -o Outputs/FastQC/trimmed -t 2 --extract --nogroup Outputs/Trim/6h_1.trim.fastq
+Tools/FastQC/fastqc -o Outputs/FastQC/trimmed -t 2 --extract --nogroup Outputs/Trim/6h_2.trim.fastq
+```
+
+### 4.5. Genome Indexing
+
+To efficiently map the reads to the reference zebrafish genome you first have to construct its **GFM (Graph Ferragina Manzini)-index**. It is based on an extension of Burrows-Wheeler transformation (BWT) for graphs. You will map the RNA-seq reads using HISAT2. **HISAT2** is the follow-up tool of TOPHAT2 which was one of the first tools specially designed [to handle splice junctions]{.underline}, which is necessary for mapping RNA-seq reads to a reference genome.
+
+Unzip hisat2-2.2.1-Linux_x86_64.zip in the tools folder:
+
+```{bash}
+cd Lab4/Tools
+unzip hisat2-2.2.1-Linux_x86_64.zip # This will create a folder called hisat2-2.2.1
+```
+
+You can construct the GFM-index of the reference genome using the **hisat2-build tool**. Change to the folder containing the file hisat2-build and change its permissions to make it executable:
+
+```{bash}
+cd Lab4/Tools/hisat2-2.2.1
+chmod +x hisat2-build
+```
+
+hisat2-build requires several arguments:
+
+```{bash}
+cd Lab4/Tools/hisat2-2.2.1
+./hisat2-build --help
+```
+
+The zebrafish genome can be downloaded from the UCSC Genome Browser (<http://hgdownload.cse.ucsc.edu/>goldenPath/danRer10/bigZips/danRer10.fa.gz). Nevertheless, you will find a FASTA-formatted file containing chromosome 12 together with the FASTQ files (danRer10.chr12.fa.gz).
+
+#### Exercise 4
+
+1\. Extract the reference genome in the data folder:
+
+```{bash}
+cd Lab4/Data
+gunzip danRer10.chr12.fa.gz
+```
+
+2\. Now, index it:
+
+```{bash}
+# mkdir -p Outputs/Hisat2
+Tools/hisat2-2.2.1/hisat2-build data/danRer10.chr12.fa output/Hisat2/danRer10.chr12
+```
+
+• Note that you will need to include the complete path to the tool and input file.
+
+The arguments are:
+
+• danRer10.chr12.fa: reference assembly in FASTA file
+
+• danRer10.chr12: the prefix for all output files written by hisat2-build
+
+3\. Once hisat2-build is finished, look at the output files. The files having extension **.ht2** and prefix **danRer10.chr12** contain the index of the reference assembly (in this case, only of chromosome 12) in a format that HISAT2 can use.
+
+### 4.6. Read mapping using hisat2
+
+• Change the permissions of the file "hisat2" in "hisat2-2.2.1" to make it executable:
+
+```{bash}
+cd Lab4/Tools/hisat2-2.2.1
+chmod +x hisat2
+```
+
+The general format of the hisat2 command is:
+
+```{bash}
+Tools/hisat2-2.2.1/hisat2 --help
+```
+
+#### Exercise 5
+
+1\. Map the trimmed reads in the 2-cell zebrafish embryo sequencing library.
+
+The alignment summary will be directly printed to STDOUT. How many reads aligned concordantly exactly one time?
+
+• Note that you will need to include the complete paths to the tool and input files. This is going to be the longest step of the pipeline, requiring a few minutes.
+
+```{bash}
+mkdir Outputs/Sam
+Tools/hisat2-2.2.1/hisat2 -q -x Outputs/Hisat2/danRer10.chr12 -1 Outputs/Trim/2cells_1.trim.fastq -2 Outputs/Trim/2cells_2.trim.fastq -S Outputs/Sam/2cells.sam
+```
+
+2\. While the job is running, examine the files that HISAT2 is writing.
+
+```{bash}
+head Outputs/Sam/2cells.sam
+```
+
+3\. Map the remaining libraries.
+
+```{bash}
+Tools/hisat2-2.2.1/hisat2 -q -x Outputs/Hisat2/danRer10.chr12 -1 Outputs/Trim/6h_1.trim.fastq -2 Outputs/Trim/6h_2.trim.fastq -S Outputs/Sam/6h.sam
+```
+
+### 4.6.1. Examining the Read Mappings with Samtools
+
+When the mapping is finished, you find the most important statistics directly at the STDOUT. To convert a SAM-formatted file into a BAM-formatted file you can use SAMtools.
+
+• From the tools folder:
+
+```{bash}
+tar xvjf Tools/samtools-bcftools-htslib-1.0_x64-linux.tar.bz2
+```
+
+• From the resulting samtools-bcftools-htslib-1.0_x64-linux folder:
+
+```{bash}
+chmod u+x Tools/samtools-bcftools-htslib-1.0_x64-linux/bin/samtools
+```
+
+#### Exercise 6
+
+1\. Convert the SAM to BAM files:
+
+```{bash}
+mkdir -p Outputs/Bam
+Tools/samtools-bcftools-htslib-1.0_x64-linux/bin/samtools view -bS Outputs/Sam/2cells.sam > Outputs/Bam/2cells.bam
+```
+
+2\. Examine the contents of the BAM files:
+
+```{bash}
+Tools/samtools-bcftools-htslib-1.0_x64-linux/bin/samtools view Outputs/Bam/2cells.bam | head
+```
+
+3\. Examine the BAM files in the web version of Integrative Genomics Viewer (IGV) <https://igv.org/app/> therefore the BAM file needs to be sorted and indexed:
+
+```{bash}
+# cd samtools-1.16.1   
+# mkdir bin
+# ./configure --prefix=/tools/samtools-1.16.1/bin
+# make
+# make install
+
+Tools/samtools-1.16.1/samtools sort -o Outputs/Bam/2cells_sorted.bam Outputs/Bam/2cells.bam
+
+Tools/samtools-1.16.1/samtools index Outputs/Bam/2cells_sorted.bam
+```
+
+What do you see in IGV?
+
+> Expressed gene mapping.
+
+#### Exercise 7
+
+Creating a Bash script will allow you to define a series of actions which the computer will then perform without us having to enter the commands yourself.
+
+1\. Open an empty plain-text file and write: **#!/usr/bin/env bash**
+
+2\. Copy all your commands (not the ones for extracting the tools!).
+
+3\. Save the file as my_rnaseq_script.sh and make it executable.
+
+```{bash}
+./rnaseq.sh 2cells
+./rnaseq.sh 6h
+```

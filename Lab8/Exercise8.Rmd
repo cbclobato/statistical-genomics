@@ -1,0 +1,191 @@
+---
+title: "DNA Methylation Data Analysis"
+author: "Carolina Lobato"
+date: "2022-12-03"
+output: html_document
+---
+
+# Statistical Genomics: Exercise 8
+
+## 1. Introduction
+
+### 1.1. Tools
+
+```{bash}
+sudo apt install bowtie2 samtools
+```
+
+## 2. Quality control with FastQC
+
+```{bash}
+mkdir -p Outputs/FastQC
+```
+
+```{bash}
+cd Tools/FastQC
+chmod 755 fastqc
+./fastqc # This is an interactive interface
+```
+
+• In particular, have a close look at the "Per base sequence content". Note the GC distribution and percentage of "T" and "C". Is this what you expected?
+
+> Yes. In the forward reads, unmethylated Cs were converted to Ts. While in the reverse reads, all unmethylated Gs are now As.
+
+## 3. Mapping with Bismark
+
+### 3.1. Preparing the genome
+
+```{bash}
+mkdir -p Data/GRCh38
+```
+
+```{bash}
+Tools/Bismark-0.22.3/bismark_genome_preparation -verbose Data/GRCh38
+```
+
+• What is the content of the .fa files?
+
+> The files show the Chr 21 sequence conversion after forward (CT) and reverse (GA) read mapping.
+
+Compute the percentage of "As", "Cs", "Gs", and "Ts" for each of the .fa files. For this purpose, you can use the wc command together with grep command with the -o flag. -o stands for --only-matching and will print each match (non-empty) in an input line on a separate output line. Compare to the FastQC files.For example
+
+```{bash}
+for file in Data/GRCh38/Bisulfite_Genome/*/*_conversion.fa; do
+  for b in A C G T; do
+    grep -o $b $file | wc -l
+  done
+done
+```
+
+### 3.2. Running Bismark
+
+We will now process and map the reads using Bismark. (Running this command will take a while!)
+
+```{bash}
+Tools/Bismark-0.22.3/bismark -n 1 Data/GRCh38/ -1 Data/ENCFF857QML_R1.fastq.gz -2 Data/ENCFF857QML_R2.fastq.gz
+```
+
+**Inspect the report file. How do you interpret?** TODO
+
+## 4. Extracting methylation calls
+
+```{bash}
+Tools/Bismark-0.22.3/deduplicate_bismark --bam Outputs/Bismark/ENCFF857QML_R1_bismark_bt2_pe.bam
+```
+
+Please, note that read deduplication is recommended for WGBS samples, but not for reduced representation bisulfite sequencing (RRBS) libraries. Why?
+
+> Given that the sequencing libraries for RRBS are based on enzyme-digestion, which generates identical reads derived from multi-copies of the chromosome at the same position, no available strategy can discriminate these reads are derived from distinct copies of the same fragments, or from PCR-induced duplicates. Thus, confusion between the genuine molecular copies and duplicates might bias the Outputs of DNA methylation analyses.
+
+Sort and index the deduplicated bam files using samtools. Check former exercises to recall the appropriate commands.
+
+```{bash}
+mkdir -p Outputs/samtools
+
+  Tools/samtools-1.16.1/samtools sort Outputs/Bismark/ENCFF857QML_R1_bismark_bt2_pe.deduplicated.bam -o Outputs/samtools/ENCFF857QML_R1_bismark_bt2_pe.sorted.bam
+  
+  Tools/samtools-1.16.1/samtools index Outputs/samtools/ENCFF857QML_R1_bismark_bt2_pe.sorted.bam
+```
+
+The methylation calls are already stored in the .bam files:
+
+```{bash}
+Tools/samtools-1.16.1/samtools view Outputs/Bismark/ENCFF857QML_R1_bismark_bt2_pe.deduplicated.bam | head
+```
+
+Bismark includes a tool to extract the methylation call for each "C" and write the information in a more readable format. This tool is called bismark_methylation_extractor:
+
+```{bash}
+bismark_methylation_extractor \
+    --report \
+    -s \
+    --counts \
+    --bedGraph \
+    --gzip \
+    -o Methylation \
+    Outputs/Bismark/ENCFF857QML_R1_bismark_bt2_pe.deduplicated.bam
+```
+
+### 4.1. M-bias plot
+
+Methylation bias (M-bias) plots are useful for quality control.
+
+The bismark_methylation_extractor tool produces an M-bias plot. The plot also contains the absolute number of methylation calls (both methylated and unmethylated) per position. For pairedend, reads two individual M-bias plots will be drawn.
+
+Inspect the M-bias plot for potential problems.
+
+```{bash}
+Tools/Bismark-0.22.3/bismark2report \
+    --output Outputs/Methylation/M-bias-plot.html \
+    --alignment_report Outputs/Bismark/ENCFF857QML_R1_bismark_bt2_PE_report.txt \
+    --dedup_report Outputs/Bismark/ENCFF857QML_R1_bismark_bt2_pe.deduplication_report.txt \
+    --splitting_report Outputs/Methylation/ENCFF857QML_R1_bismark_bt2_pe.deduplicated_splitting_report.txt \
+    --mbias_report Outputs/Methylation/ENCFF857QML_R1_bismark_bt2_pe.deduplicated.M-bias.txt
+```
+
+## 5. Visualizing methylation Data
+
+### 5.1. Generating heatmaps and profiles with deepTools
+
+##### 5. Use your favorite tool to:
+
+##### 1) filter for TSS corresponding to protein-coding genes (we want the protein coding sites as methylation status could have a big impact on gene expression), and
+
+##### 2) add a column in between the TSS and gene stable ID containing the position of the TSS plus 1 (why?). Remove the header and save the resulting file as a .bed file.
+
+```{r}
+library(dplyr)
+mart <- read.table("Lab8/Outputs/deepTools/mart_export.txt", sep = "\t", header = T) %>% filter(Gene.type == "protein_coding") %>% mutate(TSS1 = Transcription.start.site..TSS. + 1) %>% select(Chromosome.scaffold.name, Transcription.start.site..TSS., TSS1, Gene.stable.ID, Gene.name, Gene.type)
+head(mart)
+
+write.table(mart, file = "Lab8/Outputs/deepTools/mart_prot_code.txt", sep = "\t", col.names = F, row.names = F, quote = F)
+```
+
+The bamCoverage tool takes a BAM-formatted file as input and generates a coverage track, in bigWig or bedGraph format, as output.
+
+• Execute the following command for the deduplicated read mappings:
+
+```{bash}
+~/miniconda3/envs/StatGen/bin/bamCoverage \
+    --binSize 10 \
+    --extendReads \
+    --ignoreDuplicates \
+    --normalizeUsing RPKM \
+    --bam Outputs/samtools/ENCFF857QML_R1_bismark_bt2_pe.sorted.bam \
+    --outFileFormat bigwig \
+    --outFileName Outputs/deepTools/ENCFF857QML_R1_bismark_bt2_pe.sorted.bigwig \
+    --numberOfProcessors 2
+```
+
+Given one or more bigWig-formatted files and a set of genomic coordinates, the computeMatrix tool constructs a matrix that can be used for visualization:
+
+```{bash}
+~/miniconda3/envs/StatGen/bin/computeMatrix reference-point \
+    -S Outputs/deepTools/ENCFF857QML_R1_bismark_bt2_pe.sorted.bigwig \
+    -R Outputs/deepTools/mart_prot_code.txt \
+    --beforeRegionStartLength=1500 \
+    --afterRegionStartLength=1500 \
+    --referencePoint=center \
+    -p 5 \
+    -o Outputs/deepTools/ENCFF857QML_R1_bismark_bt2_pe.sorted_matrix.gz
+```
+
+The reference point for the plots can be either the region start (TSS), the region end (TES) or the region center Note that regardless of what you specify, plotHeatmap/plotProfile will default to using "TSS" as the label. You can use both the plotHeatmap and plotProfile commands to visualize the matrix:
+
+```{bash}
+~/miniconda3/envs/StatGen/bin/plotHeatmap \
+    --matrixFile Outputs/deepTools/ENCFF857QML_R1_bismark_bt2_pe.sorted_matrix.gz \
+    --outFileName Outputs/deepTools/ENCFF857QML_R1_bismark_bt2_pe.sorted_heatmap.png
+```
+
+```{bash}
+~/miniconda3/envs/StatGen/bin/plotProfile \
+    --matrixFile Outputs/deepTools/ENCFF857QML_R1_bismark_bt2_pe.sorted_matrix.gz \
+    --outFileName Outputs/deepTools/ENCFF857QML_R1_bismark_bt2_pe.sorted_plot.png
+```
+
+• Generate a heatmap and a profile visualizing the methylation signal in a 500-bp genomic window centered at the TSSs retrieved from the Ensembl website. plotHeatmap has several parameters that you can adjust to beautify the image (see here and here).
+
+• How do you interpret these figures?
+
+### 5.2. Visualizing mappings in IGV

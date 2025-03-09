@@ -1,0 +1,28 @@
+The topic of how to generate bash variables using echo arose last week. Here two short examples:
+
+Lets say we have a directory containing our fastq read files:
+
+ls data
+2cells_R1.fastq  2cells_R2.fastq  6h_R1.fastq  6h_R2.fastq 
+
+Sometimes, it is quite handy to have a variable containing only the sample names (typically the SRR* number or some other numerical ID).
+
+sample_list=$(ls $DATA_DIR/*_R[1-2].fastq | sed "s/\(.*\)_R[1-2].fastq/\1/" | sed "s/data\///" | uniq )
+echo $sample_list
+
+With echo & sed, you can manipulate output variable names from input names. Eg.:
+
+mkdir MAP
+for INPUT in $DATA_DIR/*fastq; do
+        echo $INPUT
+        OUTPUT=$(echo $INPUT | sed "s/\.fastq/\.bam/" | sed "s/data/MAP/" )
+        echo $OUTPUT
+        if [ ! -f $OUTPUT ];then
+                bowtie2 --threads 6 --very-sensitive \
+                        -x danRer10.chr12.fa.gz \
+                        -U $INPUT | samtools view -Shb \
+                        > $OUTPUT
+        fi
+done
+
+

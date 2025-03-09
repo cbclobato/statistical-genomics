@@ -1,0 +1,224 @@
+---
+title: "Hi-C Data Analysis"
+author: "Carolina Lobato"
+date: "2022-12-30"
+output: html_document
+---
+
+Extract data
+```{bash}
+for file in Lab9/Data/*.gz; do
+  gunzip $file
+done
+```
+
+## 2. Quality control
+
+1. Create a folder to store the output and run FastQC for each .fastq file
+```{bash}
+mkdir -p Lab9/Outputs/FastQC
+export OUTPUT=Outputs/FastQC
+Lab9/Tools/FastQC/fastqc -o $OUTPUT -t 2 --extract --nogroup Data/*.fastq
+```
+
+2. Examine the html files
+
+
+## 3. Mapping the Hi-C reads to the reference genome
+
+### 3.1 Indexing the genome
+
+3. Download the soft-masked top-level sequence file of the BDGP6 assembly of the Drosophila melangaster genome from the Ensembl website. **CHECK**
+```{bash}
+mkdir 
+wget http://ftp.ensembl.org/pub/release-105/fasta/drosophila_melanogaster/dna/Drosophila_melanogaster.BDGP6.32.dna_sm.toplevel.fa.gz
+```
+
+4. Create a folder called “BDGP6” and store the resulting (uncompressed) file in this folder.
+```{bash}
+mkdir -p BDGP6
+gunzip Drosophila_melanogaster.BDGP6.32.dna_sm.toplevel.fa.gz
+mv Drosophila_melanogaster.BDGP6.32.dna_sm.toplevel.fa BDGP6
+```
+
+5. Indexing the genome for mapping
+
+```{bash}
+TOOLS=Tools/bowtie2-2.5.0-macos-arm64
+$TOOLS/bowtie2-build BDGP6/Drosophila_melanogaster.BDGP6.32.dna_sm.toplevel.fa \
+./BDGP6/Drosophila_melanogaster.BDGP6.32.dna_sm.toplevel \
+--threads 2
+```
+
+### 3.2 Running Bowtie2
+
+6. generate a directory Mappings to save the mapped reads
+```{bash}
+mkdir -p Mappings/
+```
+
+7. to map the forward reads:
+```{bash}
+bowtie2 -x BDGP6/Drosophila_melanogaster.BDGP6.32.dna_sm.toplevel \
+  -U data/HiC_S2_1p_10min_lowU_R1.fastq --threads 2 \
+  --reorder --very-sensitive-local | samtools view -Shb \
+  > Mappings/HiC_S2_1p_10min_lowU_R1.bam
+```
+
+8. Do the same for the reverse reads
+```{bash}
+bowtie2 -x BDGP6/Drosophila_melanogaster.BDGP6.32.dna_sm.toplevel \
+  -U Data/HiC_S2_1p_10min_lowU_R2.fastq --threads 2 \
+  --reorder --very-sensitive-local | samtools view -Shb \
+  > Mappings/HiC_S2_1p_10min_lowU_R2.bam
+```
+
+9. What is the purpose of the –-reorder parameter?
+
+10. Why do we use local instead of end-to-end alignment?
+
+11. What is the difference between –-local and –-very-sensitive-local and why would we want to use the latter option?
+
+12. For more details, please refer to the Bowtie2 manual.
+
+13. What is the purpose of Samtools in this command?
+
+14. What percent of the reads have been successfully mapped to the reference genome?
+
+
+## 4. Constructing the Hi-C contact matrix
+
+14. The study used DpnII as the restriction enzyme to cleave the DNA. Search for the sequence of the restriction site (restriction sequence) as well as the sequence left by the restriction enzyme after cutting for this specific enzyme (dangling sequence). We will need these as input parameters for HiCExplorer’s hicBuildMatrix function.
+
+15. Next, use the hicFindRestSite to find restriction sites in our reference sequence and save their locations to a bed file:
+```{bash}
+hicFindRestSite –fasta BDGP6/Drosophila_melanogaster.BDGP6.32.dna_sm.toplevel.fa \
+        –searchPattern <restriction_sequence_DpnII> -o BDGP6/restriction_sites.bed
+```
+
+16. Create a folder called “hicMatrix” to store the output files and use hicBuildMatrix to create a matrix of interactions.
+
+```{bash}
+hicBuildMatrix –-samFiles Mappings/HiC_S2_1p_10min_lowU_R1.bam \
+  Mappings/HiC_S2_1p_10min_lowU_R2.bam \
+  --binSize 10000 \
+  --restrictionSequence <restriction_sequence_DpnII> \
+  --restrictionCutFile BDGP6/restriction_sites.bed \
+  --danglingSequence <dangling_sequence_DpnII> \
+  --outBam hicMatrix/HiC_S2_1p_10min_lowU_valid.bam \
+  --outFileName hicMatrix/HiC_S2_1p_10min_lowU_10kbp.h5 \
+  --QCfolder hicMatrix/ \
+  --threads 2
+```
+
+17. Examine the .html file in the QC folder. How many read pairs are considered valid?
+
+18. Use IGV to verify that valid reads are found in the neighborhood of the appropriate restriction sites.
+
+
+### 4.1 Visualizing the Hi-C matrix
+
+19. If we want to go from a 10kbp resolution matrix to a 100kbp resolution matrix, how many bins N must be merged from the original matrix?
+
+```{bash}
+hicMergeMatrixBins \
+        –-matrix hicMatrix/HiC_S2_1p_10min_lowU_10kbp.h5 \
+        –-numBins <N> \
+        –-outFileName hicMatrix/HiC_S2_1p_10min_lowU_100kbp.h5
+```
+
+20. Generate a directory Plots and use the hicPlotMatrix tool to visualize the merged matrix:
+```{bash}        
+hicPlotMatrix \
+  --matrix hicMatrix/HiC_S2_1p_10min_lowU_100kbp.h5 \
+  --log \
+  --dpi 300 \
+  --clearMaskedBins \
+  --chromosomeOrder 2L 2R 3L 3R 4 X Y \
+  --colorMap jet \
+  --title "Hi-C contact map 100kbp" \
+  --outFileName Plots/HiC_S2_1p_10min_lowU_100kbp.png
+```
+
+21. Take a look at the generated contact maps.
+- what is plotted on the x an y axis?
+- what does a high value far off from the diagonal imply?
+
+22. Now plot for each chromosome individually. Decide if you want to exclude any chromosomes from further analyses.
+
+
+## 5 Correcting the Hi-C matrix
+
+23. First, generate the histogram:
+```{bash}
+hicCorrectMatrix diagnostic_plot \
+  --chromosomes 2L 2R 3L 3R 4 X Y \
+  --matrix hicMatrix/HiC_S2_1p_10min_lowU_100kbp.h5 \
+  --plotName Plots/HiC_S2_1p_10min_lowU_100kbp.h5_diagnostic_plot.png
+```
+
+24. Use hicCorrectMatrix correct to remove the bins that do not satisfy your chosen threshold and perform the correction (**Hint** Think about excluding specific chromosomes.):
+```{bash}
+hicCorrectMatrix correct \
+  --matrix hicMatrix/HiC_S2_1p_10min_lowU_100kbp.h5 \
+  --chromosomes 2L 2R 3L 3R 4 X Y \
+  --perchr \
+  --correctionMethod KR \
+  --filterThreshold <min> <max> \
+  --outFileName hicMatrix/HiC_S2_1p_10min_lowU_100kbp_corrected.h5
+```
+
+25. Visualize the corrected matrix per chromosome.
+
+## 6 Determining A and B compartments
+
+26. Perform this process of 1) generating the pearson correlation matrix and then 2) extracting the first principle component with the function hicPCA to identify A and B compartments in our HiC data set.
+
+27. Run hicPCA adjusting the parameters:
+```{bash}
+hicPCA –-matrix hicMatrix/HiC_S2_1p_10min_lowU_100kbp_corrected.h5 \
+  --whichEigenvectors "1"\
+  --pearsonMatrix hicMatrix/HiC_S2_1p_10min_lowU_100kbp_corrected_pearson.h5 \
+  --format bigwig \
+  --ignoreMaskedBins \
+  --outputFileName hicMatrix/HiC_S2_1p_10min_lowU_100kbp_corrected_pc1.bw
+```
+
+28. Now run hicPlotMatrix to visualize the Pearson matrix together with the PC scores:
+```{bash}
+hicPlotMatrix –-matrix hicMatrix/HiC_S2_1p_10min_lowU_100kbp_corrected_pearson.h5 \
+  --perChr \
+  --chromosomes 2L 2R 3L 3R X \
+  --colorMap hot \
+  --bigwig hicMatrix/HiC_S2_1p_10min_lowU_100kbp_corrected_pc1.bw \
+  --title "Pearson matrix and PC1" \
+  --outFileName Plots/HiC_S2_1p_10min_lowU_100kbp_corrected_pca1.png
+```
+
+29. What does PC1 represent?
+
+
+## 7 Calling topologically associating domains (TADs)
+
+30. We will call TADs with hicFindTADs for the higher resolution (10kpb) matrix we started with.
+
+31. Generate the histogram for the 10kbp contact map and correct as before in 23 and 24. Name the corrected matrix HiC_S2_1p_10min_lowU_10kbp_corrected.h5 
+
+32. Call TADs with hicFindTADs for the higher resolution (10kpb) matrix we started with
+```{bash}
+hicFindTADs –-matrix ./hicMatrix/HiC_S2_1p_10min_lowU_10kbp_corrected.h5 \
+  --minDepth 30000 \
+  --maxDepth 100000 \
+  --step 10000 \
+  --correctForMultipleTesting fdr \
+  --thresholdComparisons 0.05
+  --delta 0.001 \
+  --outPrefix ./hicMatrix/HiC_S2_1p_10min_lowU_10kbp_corrected_TADs \
+  --numberOfProcessors 2
+```
+
+33. Have a look at the hicPlotTADs manual page. You can edit the included tracks.ini file to you specific paths and file names. Visualize the TADs of a region of your choice.
+```{bash}
+hicPlotTADs --tracks tracks.ini -o <output_file_name> \
+  --region <chr_region> –-height 6
+```

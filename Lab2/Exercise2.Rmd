@@ -1,0 +1,246 @@
+---
+title: "Data Wrangling and Visualization with R"
+author: "Carolina Lobato"
+date: "10/12/2022"
+output: html_document
+---
+
+```{r loadlib, echo = FALSE}
+library (dplyr)
+library (tidyr)
+library (ggplot2)
+library (ggrepel)
+# install.packages("ggsci")
+library(ggsci)
+```
+
+# Statistical Genomics: Exercise 2
+
+## Data wrangling with R
+
+### 1.
+
+```{r, echo = FALSE}
+getwd()
+
+# Read in the "Child_Variants.csv" file into a variable called "child"
+child <- read.table("Lab2/Data/Child_Variants.csv", sep = ",", header = TRUE, fill = TRUE)
+head(child)
+
+# Create a new variable called "Type" containing the value "SNP" if both "REF" and "ALT" contain only one letter (you can use the nchar() function for this), and "INDEL", otherwise. Overwrite the original variable
+child <- child %>%
+  mutate(type = if_else(nchar(REF) == 1 & nchar(ALT) == 1, "SNP", "INDELS"))
+head(child)
+
+# Find genes which have at least three novel SNPs in them and calculate their average "COVERAGE". This means that:
+## The "Type" of the observation must be "SNP"
+## The observation should not have a dbSNP identifier (it should be a dot)
+novel_SNP <- child %>% 
+  filter(type == "SNP") %>% group_by(GENE) %>% mutate(n_dots = sum(dbSNP == ".")) %>% filter(n_dots >= 3) %>% summarize(CA = mean(COVERAGE)) 
+```
+
+### 2.
+
+```{r, echo=FALSE}
+# Load the contents of "gadata_example_2.csv" into a tidy data structure
+ga <- read.table("Lab2/Data/gadata_example_2.csv", sep = ",", header = TRUE, fill = TRUE, row.names = 1)
+head(ga)
+
+# Calculate the average pageviews per day by channel
+ga %>% group_by(date, channelGrouping) %>% summarize(Page_mean = mean(pageviews))
+
+# Add two new variables: page views per session ("pvs_per_session") and the bounce rate ("bounce_rate"), the number of bounces per entrance
+ga <- ga %>% mutate(pvs_per_session = pageviews/sessions, bounce_rate = bounces/entrances)
+
+# Calculate the average bounce rate by device category ("deviceCategory")
+ga %>% group_by(deviceCategory) %>% summarize(BRAv = mean(bounce_rate))
+```
+
+## Data visualization with R and ggplot2
+
+Unless explicitly stated, please use the ggplot function in the ggplot2 package. Depending on the exercise, you may need to reformat the data before plotting.
+
+### 1.
+
+```{r, echo=FALSE}
+
+# Read the contents of brain_bodyweight.txt into a data frame
+brain <- read.table("Lab2/Data/brain_bodyweight.txt", sep = "\t", header = TRUE, fill = TRUE)
+head(brain)
+
+# Create a scatter plot with the body weight on the x-axis and the brain weight on the y-axis. Use the geom_text_repel() function in the ggrepel package to add non-overlapping labels indicating the species.
+ggplot(brain, aes(x = Body_weight_kg, y = Brain_weight_g)) + geom_point() + geom_text_repel(aes(label = Species))
+```
+
+### 2.
+
+```{r, echo=FALSE}
+
+# Read the contents of chr_data.txt into a data frame
+chr <- read.table("Lab2/Data/chr_data.txt", sep = "\t", header = TRUE, fill = TRUE)
+head(chr)
+
+# Create a scatter plot with GM06990_ABL1 on the x-axis and GM06990_MLLT3 on the y-axis and:
+## Color the points blue
+ggplot(chr, aes(x = GM06990_ABL1, y = GM06990_MLLT3)) + geom_point(col = "blue") 
+
+## Color the points according to the genomic location
+ggplot(chr, aes(x = GM06990_ABL1, y = GM06990_MLLT3)) + geom_point(aes(col = genomic.location))
+
+# Create boxplots summarizing the distribution of GM06990_ABL1 by genomic location
+ggplot(chr, aes(x = genomic.location, y = GM06990_ABL1)) + geom_boxplot(aes(fill = genomic.location))
+
+# Overlay the data points on top of the boxplots; jitter the points to avoid overlaps
+ggplot(chr, aes(x = genomic.location, y = GM06990_ABL1)) + geom_boxplot(aes(fill = genomic.location)) + geom_jitter()
+
+# Create a violin plot combined with a boxplot, similar to Figure 1 (note tfill()
+ggplot(chr, aes(x = genomic.location, y = GM06990_ABL1)) + geom_violin(aes(fill = genomic.location)) + geom_boxplot(width = 0.1) + scale_fill_brewer(palette = "Blues") + theme_minimal()
+```
+
+### 3.
+
+```{r, echo=FALSE}
+# Read the contents of "gene_expression.txt" into a data frame. The table represents the expression values measured under three conditions ("control", "cond1", and "cond2") for one particular gene in cell lines derived from four different patients
+gene_exp <- read.table("Lab2/Data/gene_expression.txt", sep = "\t", header = TRUE, fill = TRUE)
+head(gene_exp)
+
+# Recreate the graph in Figure 2
+pivot_longer(
+  gene_exp,
+  cols = 3:5,
+  names_to ="treatment",
+  values_to = "values"
+  ) %>%
+  ggplot(aes(x = subject, y = values, fill = treatment)) +
+  geom_col(position = "dodge", col = "black") +
+  scale_fill_brewer(palette = "Reds") +
+  theme_bw() +
+  theme(legend.position = "left") +
+  labs(x = "Subject", y = "Expression value", fill = "Treatment")
+```
+
+### 4.
+
+• Use the "iris" dataset:
+
+<https://en.wikipedia.org/wiki/Iris_flower_data_set>
+
+```{r , echo=FALSE}
+# Create a scatter plot of sepal length vs. sepal width; color the points according to the species
+iris %>% ggplot(aes(x = Sepal.Length, y = Sepal.Width)) + geom_point(aes(col = Species))
+
+# Create a data frame containing the mean and the standard error of the mean (SEM) for each species and measurement. Create a clustered bar chart visualizing each measurement for each of the four species. Add an error bar to the chart showing the SEM
+iris
+
+df <- iris %>%
+  group_by(Species) %>%
+  summarise(
+    Mean_SL = mean(Sepal.Length),
+    Mean_SW = mean(Sepal.Width),
+    Mean_PL = mean(Petal.Length),
+    Mean_PW = mean(Petal.Width),
+    SE_SL = sd(Sepal.Length)/sqrt(n()),
+    SE_SW = sd(Sepal.Width)/sqrt(n()),
+    SE_PL = sd(Petal.Length)/sqrt(n()),
+    SE_PW = sd(Petal.Width)/sqrt(n()),
+  )
+
+df2 <- pivot_longer(df, cols = 2:9, names_to = c("Statistics", "Measurement"), names_sep = "_", values_to = "Values")
+
+df3 <- pivot_wider(df2, names_from = "Statistics", values_from = "Values")
+                                             
+ggplot(df3, aes(x = Species, y = Mean, fill = Measurement)) +
+  geom_col(position = "dodge", col = "black") +
+  scale_fill_brewer(palette = "Purples") +
+  theme_bw() +
+  geom_errorbar(aes(ymin = Mean - SE, ymax = Mean + SE), width = 0.5,   position = position_dodge(0.9)) 
+
+# Instead of computing the summary statistics by yourself, let ggplot do it. Use the stat_summary() function for this purpose
+df4 <- pivot_longer(iris, cols = 1:4, names_to = "Measurement", values_to = "Values")
+
+ggplot(df4, aes(x = Species, y = Values, fill = Measurement)) +
+  stat_summary(geom = "col", position = position_dodge(width = 0.9), fun = "mean") +
+  stat_summary(geom = "errorbar", position = position_dodge(width = 0.9), fun.data = "mean_se", width = 0.5) +
+  scale_fill_brewer(palette = "Oranges")
+```
+
+### 5.
+
+• This dataset is described here:
+
+[http://search.r-project.org/library/ggplot2/html/msleep.html](http://search.r-project.org/library/)
+
+ggplot(aes(x = bodywt, y = brainwt, col = other)) +
+
+geom_point() +
+
+scale_x\_continuous(limits = c(0.5e-2, 1e4), trans = "log10") +
+
+scale_y\_continuous(limits = c(1e-4, 1e1), trans = "log10") +
+
+theme_bw() +
+
+theme(legend.position = "none") +
+
+geom_text_repel(aes(label = other)) +
+
+geom_smooth(method = lm, color = "black") +
+
+labs(x = "Body weight [kg]", y = "Brain weight [kg]") +
+
+coord_fixed(ratio = 2)
+
+```{r , echo=FALSE}
+# Load the data in mammals.txt
+mammals <- read.table("Lab2/Data/mammals.txt", sep = "\t", header = TRUE, fill = TRUE)
+head(mammals)
+
+# Produce a figure similar to Figure 3
+mammals2 <- drop_na(mammals, vore)
+
+mammals2 %>% 
+  ggplot(aes(x = bodywt, y = brainwt, col = vore, size = sleep_total)) +
+  geom_point() + 
+  scale_x_continuous(limits = c(0.5e-2, 1e3), trans = "log10") +
+  scale_y_continuous(limits = c(1e-4, 1e-1), trans = "log10") +
+  scale_color_npg() +
+  theme_classic() +
+  theme(legend.position = "bottom", plot.title = element_text(hjust = 0.5)) +
+  guides(color = guide_legend(nrow = 2, byrow = TRUE), size = guide_legend(nrow = 3, byrow = TRUE)) +
+  coord_fixed (ratio = 1.5) +
+  labs(title = "Color palette is NPG", x = "Body weight [kg]", y = "Brain weight [kg]", col = "Diet", size = "Total sleep [h]"
+)
+
+# Produce a figure similar to Figure 4
+mammals2 %>% 
+  ggplot(aes(x = bodywt, y = brainwt)) +
+  geom_point() + 
+  facet_grid(cols = vars(vore)) + 
+  scale_x_continuous(limits = c(0.5e-2, 1e4), trans = "log10") + 
+  scale_y_continuous(limits = c(1e-4, 1e1), trans = "log10") +
+  theme_bw() +
+  theme(legend.position = "none", 
+        strip.background = element_rect(fill = "red"),
+        strip.text = element_text(color = "white")
+        ) +
+  geom_smooth(method = lm, color = "black") +
+  labs(x = "Body weight [kg]", y = "Brain weight [kg]") +
+  coord_fixed(ratio = 2)
+
+# What relationship do these data suggest for brain and body weight (brainwt and bodywt)? What does it indicate about humans? How about water opossums? 
+mammals$other <- ""
+idx <- c(20, 34)
+mammals$other[idx] <- mammals$name[idx]
+
+mammals %>% 
+  ggplot(aes(x = bodywt, y = brainwt, col = other != "")) +
+  geom_point() + 
+  scale_x_continuous(limits = c(0.5e-2, 1e4), trans = "log10") + 
+  scale_y_continuous(limits = c(1e-4, 1e1), trans = "log10") +
+  theme_bw() +
+  theme(legend.position = "none") +
+  geom_text_repel(aes(label = other)) +
+  geom_smooth(method = lm, color = "black") +
+  labs(x = "Body weight [kg]", y = "Brain weight [kg]") +
+  coord_fixed(ratio = 2)
+```

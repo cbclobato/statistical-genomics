@@ -1,0 +1,662 @@
+---
+title: "Final Project"
+author: "Carolina Lobato"
+date: "2023-01-02"
+output: html_document
+---
+
+# 1. Introduction
+
+## 1.1 Project Structure
+
+```{text}
+ROOT:./statistical-genomics/Project
+  │
+  ├── Data                          # SRA and Metadata
+  │
+  ├── References      
+  │     ├── *.gff                   # annotation
+  │     ├── *.fa                    # reference genome
+  │     └── *.ht2                   # indexes
+  │
+  ├── Samples                       # FASTQ files
+  │     ├── SRR1699977*.fastq
+  │     └── SRR1699977*.trim.fastq
+  │
+  ├── Tools
+  │     ├── seqtk                   # downsampling
+  │     ├── FASTQC                  # quality check
+  │     ├── fastp                   # trimming  
+  │     └── hisat2-2.2.1            # indexing and mapping
+  │
+  ├── Outputs    
+  │    ├── FastQC                   # quality reports
+  │    ├── fastp                    # quality reports
+  │    └── samtools 
+  │           ├── SRR1699977*.sam
+  │           └── SRR1699977*.bam
+  │
+  └── Scripts                       # R and bash
+
+```
+
+## 1.2 Requirements
+
+### 1.2.1 Install Libraries
+
+Command-line dependencies:
+
+```{bash}
+sudo apt install --yes sra-toolkit
+```
+
+`R` dependencies:
+
+```{r}
+install.packages("tidyverse")
+if (!require("BiocManager", quietly = TRUE))
+    install.packages("BiocManager")
+BiocManager::install(version = "3.16")
+BiocManager::install("rtracklayer")
+BiocManager::install("GenomicAlignments")
+BiocManager::install("DESeq2")
+BiocManager::install("VennDiagram")
+install.packages("ggrepel")
+```
+
+### 1.2.2 Download Samples
+
+Get [accession list](https://www.ncbi.nlm.nih.gov/Traces/study/?acc=PRJNA782480&o=acc_s%3Aa).
+
+Download Samples with `SRAtoolkit`.
+
+```{bash}
+cd Project
+mkdir -p Data
+prefetch \
+--option-file SRR_Acc_List.txt \
+--output-directory Data
+```
+
+### 1.2.3. Create Project Sample and Downsampling
+
+`seqtk` also works with [conda](ttps://anaconda.org/bioconda/seqtk).
+
+```{bash}
+cd ..
+mkdir -p Samples
+for INPUT in Data/SRR1699977* do
+  echo $INPUT
+  fasterq-dump $INPUT \
+    -e 6 \
+    --outdir Data
+  # echo rm -rf $INPUT
+  OUTPUT=$(echo $INPUT | sed "s/Data/Samples/")
+  Tools/seqtk/seqtk sample -2 -s 54321 ${INPUT}_1.fastq 30000000 > ${OUTPUT}_1.fastq && \
+  Tools/seqtk/seqtk sample -2 -s 54321 ${INPUT}_2.fastq 30000000 > ${OUTPUT}_2.fastq && \
+  rm -rf ${INPUT}_1.fastq ${INPUT}_2.fastq
+done
+```
+
+`-2` 2-pass mode: twice as slow but with much reduced memory.
+
+### 1.2.4 Download Reference Genome
+
+Download reference genome from : `ftp.ensemblgenomes.ebi.ac.uk/pub/plants/release-55/fasta/medicago_truncatula/dna/Medicago_truncatula.MedtrA17_4.0.dna_sm.toplevel.fa.gz`
+
+Download reference genome index from: [`ftp.ensemblgenomes.ebi.ac.uk/pub/plants/release-55/fasta/medicago_truncatula/dna_index/Medicago_truncatula.MedtrA17_4.0.dna.toplevel.fa.gz.fai`](https://ftp.ensemblgenomes.ebi.ac.uk/pub/plants/release-55/fasta/medicago_truncatula/dna_index/)
+
+```{bash eval=FALSE, include=FALSE}
+cd ..
+mkdir -p References
+ftp -a ftp.ensemblgenomes.ebi.ac.uk # interactive command
+```
+
+In `ftp`:
+
+```{ftp -a ftp.ensembl.org}
+cd /pub/plants/release-55/fasta/medicago_truncatula/dna/
+ls
+get Medicago_truncatula.MedtrA17_4.0.dna_sm.toplevel.fa.gz
+exit
+```
+
+```{bash}
+mv Medicago_truncatula.MedtrA17_4.0.dna_sm.toplevel.fa.gz References
+gunzip References/Medicago_truncatula.MedtrA17_4.0.dna_sm.toplevel.fa.gz
+```
+
+### 1.2.5 Download Annotation Data
+
+Download annotation Data for the *Medicago truncatula* genome.
+
+```{bash}
+wget -P References https://ftp.ensemblgenomes.ebi.ac.uk/pub/plants/release-55/gff3/medicago_truncatula/Medicago_truncatula.MedtrA17_4.0.55.gff3.gz
+gunzip References/Medicago_truncatula.MedtrA17_4.0.55.gff3.gz
+```
+
+------------------------------------------------------------------------
+
+# 2. Quality Control
+
+Know the number of reads in the FASTQ files.
+
+```{bash}
+for FILE in Samples/SRR16999767_1.fastq; do
+  echo -ne "$(basename $FILE .fastq)\t"
+  awk ' END { print NR / 4 } ' $FILE
+done
+```
+
+```{text}
+SRR16999767_1	100478278
+```
+
+Know the read length in the FASTQ files.
+
+```{bash}
+for FILE in Samples/*.fastq; do
+  echo -ne "$(basename $FILE .fastq)\t"
+  head -10000 $FILE | awk 'BEGIN {OFS = "\t"} NR%4 == 2 {lengths[length($0)]++} END {for (l in lengths) {print l, lengths[l]}} '
+done
+```
+
+```{text}
+SRR553457   50    2500
+SRR553458   50    2500
+SRR553459   50    2500
+SRR553460   49    2500
+SRR553461   49    2500
+SRR553462   49    2500
+SRR553463   49    2500
+SRR553464   49    2500
+SRR553465   49    2500
+```
+
+FastQC report
+
+```{bash}
+chmod +x Tools/FastQC/fastqc
+mkdir -p Outputs/FastQC
+OUTPUT=Outputs/FastQC
+for INPUT in Samples/*.fastq; do
+  Tools/FastQC/fastqc \
+    --threads 4 \
+    --extract \
+    --nogroup \
+    -o $OUTPUT \
+    $INPUT
+done
+```
+
+> FastQC report revealed that more than 10% of all reads contain a significant amount of Illumina Universal Adapter sequences and that sequence duplication levels overcome 20% in all Samples.
+
+Know the [Phred enconding type](http://onetipperday.blogspot.com/2012/10/code-snip-to-decide-phred-encoding-of.html).
+
+```{bash}
+INPUT=Samples/SRR16999767_1.fastq
+head $INPUT | awk '{if(NR%4==0) printf("%s",$0);}' |  od -A n -t u1 | awk 'BEGIN{min=100;max=0;}{for(i=1;i<=NF;i++) {if($i>max) max=$i; if($i<min) min=$i;}}END{if(max<=74 && min<59) print "Phred+33"; else if(max>73 && min>=64) print "Phred+64"; else if(min>=59 && min<64 && max>73) print "Solexa+64"; else print "Unknown score encoding!";}'
+```
+
+------------------------------------------------------------------------
+
+# 3. Exclude adapters and short and low quality reads
+
+Used `fastp` in the pair read mode to identify and remove adapters (only knew it was TruSeq), remove low quality reads (PHRED \<20), reads under 36 bp and duplicates with `dedup`. Output files as trim.fastq.
+
+```{bash}
+for INPUT1 in Samples/SRR169997*_1.fastq; do
+  echo $INPUT1
+  INPUT2=$(echo $INPUT1 | sed "s/_1/_2/")
+  OUTPUT1=$(echo $INPUT1 | sed "s/fastq/trim\.fastq/")
+  OUTPUT2=$(echo $INPUT2 | sed "s/fastq/trim\.fastq/")
+  Tools/fastp \
+    -i $INPUT1 \
+    -I $INPUT2 \
+    -o $OUTPUT1 \
+    -O $OUTPUT2 \
+    --qualified_quality_phred 20 \
+    --length_required 36 \
+    --detect_adapter_for_pe \
+    --dedup \
+    --dup_calc_accuracy 1
+done
+```
+
+Couldn't do it with Trimmomatic
+
+```{bash}
+TRIMMOMATIC=Tools/Trimmomatic-0.36/trimmomatic-0.36.jar
+for INPUT in Samples/SRR169997*.fastq; do
+  OUTPUT=$(echo $INPUT | sed "s/fastq/trim\.fastq/")
+  echo java -jar TRIMMOMATIC PE \
+    -threads 6 \
+    -phred33 \
+    -basein $INPUT \
+    -baseout $OUTPUT \
+    ILUMINACLIP: \
+    MINLEN:36 \
+    AVGQUAL:20
+done
+```
+
+After trimming report
+
+```{bash}
+chmod +x Tools/FastQC/fastqc
+mkdir -p Outputs/fastp
+OUTPUT=Outputs/fastp
+for INPUT in Samples/*.trim.fastq; do
+  Tools/FastQC/fastqc \
+    --threads 4 \
+    --extract \
+    --nogroup \
+    -o $OUTPUT \
+    $INPUT
+done
+```
+
+------------------------------------------------------------------------
+
+# 4. Mapping
+
+To provide more information about known and novel transcripts and alternatively spliced transcripts, quality-trimmed reads from each sample were also mapped to the Medicago genome (Mt4.0v2).
+
+## 4.1 Genome Indexing
+
+```{bash}
+mkdir -p indexes
+Tools/hisat2-2.2.1/hisat2-build References/Medicago_truncatula.MedtrA17_4.0.dna_sm.toplevel.fa References/indexes
+```
+
+## 4.2 Mapping and SAM to BAM conversion
+
+```{bash}
+mkdir -p Outputs/samtools
+HISAT2=Tools/hisat2-2.2.1/hisat2
+for INPUT1 in Samples/*_1.trim.fastq; do
+  INPUT2=$(echo $INPUT1 | sed "s/_1/_2/")
+  OUTPUT=Outputs/samtools/$(basename $INPUT1 _1.trim.fastq)".sam"
+  $HISAT2 \
+    -p 4 \
+    -q \
+    -x References/indexes/MedtrA17 \
+    -1 $INPUT1 \
+    -2 $INPUT2 \
+    -S $OUTPUT \
+    --remove-chrname >> Outputs/samtools/hisat2.log
+  INPUT=$OUTPUT
+  OUTPUT=$(echo $INPUT | sed "s/sam$/bam/")
+  echo $INPUT $OUTPUT
+  samtools view -bS $INPUT > $OUTPUT
+  rm $INPUT
+done
+```
+
+-   `-q` Defines the input file as fastq files.
+-   `-x` The indexed genome prefix.
+-   `-U` The single-end input read file in fastq format.
+-   `-S` The output file with .sam extension.
+
+## 4.3 Examine Read Mappings
+
+To examine the contents of the BAM files
+
+```{bash}
+for INPUT in Outputs/samtools/*.bam; do
+  samtools view $INPUT | head
+done
+```
+
+Sort and index BAM files to examine them in IGV: Take a screenshot for the presentation!
+
+```{bash}
+for INPUT in Outputs/samtools/*[0-9].bam; do
+  if [ -f "$INPUT" ]; then
+    OUTPUT=$(echo $INPUT | sed "s/bam$/sorted.bam/")
+    samtools sort -o $OUTPUT $INPUT
+    samtools index $OUTPUT
+    # rm $INPUT
+  fi
+done
+```
+
+------------------------------------------------------------------------
+
+# 5. Differential Expression Analysis
+
+Create the feature table:
+
+```{bash}
+cat Data/Metadata.csv
+```
+
+Filter GTF for protein coding genes (Not mentioned in the paper):
+
+```{bash}
+awk -F "\t" '$3 == "gene" { print $0 }' References/Medicago_truncatula.MedtrA17_4.0.55.gff3  | \
+  grep 'biotype=protein_coding' > Outputs/ProteinCodingGenes.gff3
+head -2 Outputs/ProteinCodingGenes.gff3
+```
+
+Load libraries and Metadata:
+
+```{r}
+library(rtracklayer)
+library(GenomicAlignments)
+library(DESeq2)
+library(tidyr)
+library(dplyr)
+library(ggplot2)
+library(VennDiagram)
+library(scales)
+library(ggrepel)
+
+gff <- import("Project/Outputs/ProteinCodingGenes.gff3")
+gff <- split(gff, mcols(gff)$gene_id)
+Metadata <- read.csv("Project/Data/Metadata.csv")
+# Samples <- c("", "")
+# Metadata <- subset(Metadata, Run %in% Samples)
+Metadata
+```
+
+Find the overlapping features: Count reads overlapping with certain genomic features
+
+```{r}
+Samples <- Metadata$Run
+paths <- paste("Project/Outputs/samtools/", Samples, ".sorted.bam", sep="")
+index_paths <- paste("Project/Outputs/samtools/", Samples, ".sorted.bam.bai", sep="")
+reads <- BamFileList(paths, yieldSize=50000, index=index_paths)
+rse <- summarizeOverlaps(
+  features=gff,
+  reads=reads,
+  mode="Union", # Reads that overlap any portion of exactly one feature are counted. Reads that overlap multiple features are discarded. This is the most conservative of the 3 modes.
+  ignore.strand=FALSE
+)
+save(rse, Metadata, file="Project/Outputs/DESeq.RData") # Ranged Summarized Experiment
+```
+
+## 5.1 Differential Expressed Genes (DEGs)
+
+Define Negative-binomial model and run the DESeq2 pipeline.
+
+```{r}
+load(file="Project/Outputs/DESeq.RData")
+Metadata$Genotype <- as.factor(Metadata$Genotype)
+Metadata$Genotype <- relevel(Metadata$Genotype, ref="wild type R108")
+counts <- assays(rse)$counts
+
+dds <- DESeqDataSetFromMatrix(
+  countData=counts,
+  colData=Metadata,
+  design=~Genotype
+)
+dds <- DESeq(dds)
+
+alpha <- 0.05 # Threshold on the adjusted p-value
+folds <- 1
+Data <- Data.frame(Outputs(dds)) %>%
+  drop_na(log2FoldChange, padj) %>% 
+  mutate(
+    Significance=abs(log2FoldChange) > folds & padj < alpha,
+    Intersection=abs(log2FoldChange) < folds & padj > alpha,
+    Up=log2FoldChange > folds & padj < alpha,
+    Down=log2FoldChange < -folds & padj < alpha
+  )
+  
+sel_all <- Data %>% filter(Significance) %>% mutate(genes=row.names(.)) # 1433 protein-coding genes
+sel_int <- Data %>% filter(Intersection) %>% mutate(genes=row.names(.)) # 22159 protein-coding genes
+sel_up <- Data %>% filter(Up) %>% mutate(genes=row.names(.)) # 1000 protein-coding genes
+sel_down <- Data %>% filter(Down) %>% mutate(genes=row.names(.)) # 433 protein-coding genes
+```
+
+```{r volcano plot}
+p <- ggplot(Data, aes(log2FoldChange, padj, color=Significance)) +
+  geom_point() + 
+  scale_y_continuous(trans = c("log10", "reverse")) +
+  labs(
+    title="DEGs in Mting2-1 mutant vs wild type R108 that are protein-coding (all tissue types)",
+    x="Effect size: log2(fold-change)", 
+    y="log10(adjusted p-value)"
+  ) +
+  geom_text_repel(
+    sel_all,
+    mapping=aes(log2FoldChange, padj, label=genes),
+    size=2,
+    box.padding=unit(0.25, "lines"),
+    max.overlaps = 10
+  ) +
+  geom_hline(
+    yintercept=alpha,
+    linetype="dashed",
+    color="black",
+    linewidth=.5
+  ) +
+  geom_vline(
+    xintercept=c(-folds, folds),
+    linetype="dashed",
+    color="black",
+    linewidth=.5
+  ) +
+  theme_bw()
+p
+ggsave("Project/Outputs/volcano_genotype.png", units = "cm", width = 30, height = 20, dpi = 300, p)
+```
+
+## 5.2 Venn Diagram
+
+```{r}
+load(file="Project/Outputs/DESeq.RData")
+Metadata_leaves <- slice(Metadata, 1:6) 
+Metadata_leaves$Genotype <- as.factor(Metadata_leaves$Genotype)
+Metadata_leaves$Genotype <- relevel(Metadata_leaves$Genotype, ref="wild type R108")
+counts <- assays(rse)$counts
+counts_leaves <- as.Data.frame(counts) %>% select(SRR16999767.sorted.bam:SRR16999772.sorted.bam)
+
+dds_l <- DESeqDataSetFromMatrix(
+  countData=counts_leaves,
+  colData=Metadata_leaves,
+  design=~Genotype
+)
+dds_l <- DESeq(dds_l)
+
+alpha <- 0.05 # Threshold on the adjusted p-value
+folds <- 1
+Data <- Data.frame(Outputs(dds_l)) %>%
+  drop_na(log2FoldChange, padj) %>% 
+  mutate(
+    Significance=abs(log2FoldChange) > folds & padj < alpha,
+    Intersection=abs(log2FoldChange) < folds & padj > alpha,
+    Up=log2FoldChange > folds & padj < alpha,
+    Down=log2FoldChange < -folds & padj < alpha
+  )
+  
+l_all <- Data %>% filter(Significance) %>% mutate(genes=row.names(.)) # 5080 protein-coding genes
+l_int <- Data %>% filter(Intersection) %>% mutate(genes=row.names(.)) # 13123 protein-coding genes
+l_up <- Data %>% filter(Up) %>% mutate(genes=row.names(.)) # 2816 protein-coding genes
+l_down <- Data %>% filter(Down) %>% mutate(genes=row.names(.)) # 2264 protein-coding genes
+```
+
+```{r}
+load(file="Project/Outputs/DESeq.RData")
+Metadata_apex <- Metadata[7:11,] 
+Metadata_apex$Genotype <- as.factor(Metadata_apex$Genotype)
+Metadata_apex$Genotype <- relevel(Metadata_apex$Genotype, ref="wild type R108")
+counts <- assays(rse)$counts
+counts_apex <- as.Data.frame(counts) %>% select(SRR16999774.sorted.bam:SRR16999778.sorted.bam)
+
+dds_a <- DESeqDataSetFromMatrix(
+  countData=counts_apex,
+  colData=Metadata_apex,
+  design=~Genotype
+)
+dds_a <- DESeq(dds_a)
+
+alpha <- 0.05 # Threshold on the adjusted p-value
+folds <- 1
+Data <- Data.frame(Outputs(dds_a)) %>%
+  drop_na(log2FoldChange, padj) %>% 
+  mutate(
+    Significance=abs(log2FoldChange) > folds & padj < alpha,
+    Intersection=abs(log2FoldChange) < folds & padj > alpha,
+    Up=log2FoldChange > folds & padj < alpha,
+    Down=log2FoldChange < -folds & padj < alpha
+  )
+  
+a_all <- Data %>% filter(Significance) %>% mutate(genes=row.names(.)) # 1922 protein-coding genes
+a_int <- Data %>% filter(Intersection) %>% mutate(genes=row.names(.)) # 18671 protein-coding genes
+a_up <- Data %>% filter(Up) %>% mutate(genes=row.names(.)) # 1686 protein-coding genes
+a_down <- Data %>% filter(Down) %>% mutate(genes=row.names(.)) # 236 protein-coding genes
+```
+
+```{r venn diagram}
+ua <- as.vector(a_up$genes)
+ul <- as.vector(l_up$genes)
+
+da <- as.vector(a_down$genes)
+dl <- as.vector(l_down$genes)
+
+venn.diagram(
+  x = list(Apex = ua, Leaves = ul),
+  category.names = c("Apex", "Leaves"),
+  cat.cex = 1,
+  cat.default.pos = "outer",
+  filename = 'Project/Outputs/upregulated_genes_tissue.png',
+  main = "Upregulated genes in Mting2-1",
+  main.cex = 2,
+  output=F,
+  lwd = 2,
+  fill = c("cornflowerblue", "darkgreen")
+  )
+
+venn.diagram(
+  x = list(Apex = da, Leaves = dl),
+  category.names = c("Apex", "Leaves"),
+  cat.cex = 1,
+  cat.default.pos = "outer",
+  filename = 'Project/Outputs/downregulated_genes_tissue.png',
+  main = "Downregulated genes in Mting2-1",
+  main.cex = 2,
+  output=F,
+  lwd = 2,
+  fill = c("cornflowerblue", "darkgreen")
+  )
+```
+
+------------------------------------------------------------------------
+
+# 6. Functional Analysis of DEGs
+
+```{r}
+BiocManager::install("goseq")
+# BiocManager::install("AnnotationDbi")
+BiocManager::install("AnnotationHub")
+BiocManager::install("GOSemSim")
+BiocManager::install("clusterProfiler")
+```
+
+```{r}
+library(GOSemSim)
+library(AnnotationHub)
+library(goseq)
+library(clusterProfiler)
+library(genekitr)
+library(tibble)
+library(enrichplot)
+library(dplyr)
+library(tidyr)
+
+su <- as.vector(sel_up$genes)  # 1000 protein-coding genes
+sd <- as.vector(sel_down$genes) # 433 protein-coding genes
+```
+
+```{r}
+hub <- AnnotationHub()
+q <- query(hub, "Medicago")
+id <- q$ah_id[length(q)]
+Medicago <- hub[[id]]
+```
+
+```{r}
+trans_su <- transId(id = su, transTo = "entrez", org = "mtruncatula")
+entrez_su <- trans_su$entrezid; entrez_su
+paste(entrez_su, collapse="; ")
+
+trans_sd <- transId(id = sd, transTo = "entrez", org = "mtruncatula")
+entrez_sd <- trans_sd$entrezid; entrez_sd
+paste(entrez_sd, collapse="; ")
+```
+
+```{r}
+trans_su <- transId(id = su, transTo = "entrez", org = "mtruncatula")
+
+geneList_up <- sel_up %>% 
+  filter(Significance) %>%
+  rownames_to_column(var="input_id") %>%
+  inner_join(trans_su, by="input_id") %>%
+  arrange(desc(log2FoldChange))
+  
+cols <- geneList_up$entrezid
+geneList_up <- as.numeric(geneList_up$log2FoldChange)
+names(geneList_up) <- cols
+  
+gsego_up <-  gseGO(
+  geneList_up,
+  ont="ALL",
+  keyType="ENTREZID",
+  OrgDb=Medicago,
+  minGSSize=10,
+  maxGSSize=100,
+  pvalueCutoff=1,
+  scoreType = "pos"
+)
+
+trans_sd <- transId(id = sd, transTo = "entrez", org = "mtruncatula")
+
+geneList_down <- sel_down %>% 
+  filter(Significance) %>%
+  rownames_to_column(var="input_id") %>%
+  inner_join(trans_sd, by="input_id") %>%
+  arrange(desc(log2FoldChange))
+  
+cols <- geneList_down$entrezid
+geneList_down <- as.numeric(geneList_down$log2FoldChange)
+names(geneList_down) <- cols
+  
+gsego_down <- gseGO(
+  geneList_down,
+  ont="ALL",
+  keyType="ENTREZID",
+  OrgDb=Medicago,
+  minGSSize=10,
+  maxGSSize=100,
+  pvalueCutoff=1,
+  scoreType = "pos"
+)
+```
+
+```{r}
+d_up <- dotplot(gsego_up,
+                title = "Enriched GO of genes with elevated transcript levels in Mting2-1",
+                font.size = 10,
+                showCategory = 10,
+                color = "p.adjust",
+                decreasing = T,
+                x = "GeneRatio",
+                orderBy = "GeneRatio",
+               # split="ONTOLOGY"
+                ) # + facet_grid("ONTOLOGY"); 
+d_up
+ggsave("Project/Outputs/GO_up.png", units = "cm", width = 35, height = 20, dpi = 300, d_up)
+
+d_down <- dotplot(gsego_down,
+                  title = "Enriched GO of genes with decreased transcript levels in Mting2-1",
+                  font.size = 10,
+                  showCategory = 10,
+                  color = "p.adjust",
+                  decreasing = T,
+                  x = "GeneRatio",
+                  orderBy = "GeneRatio",
+                  ); d_down
+ggsave("Project/Outputs/GO_down.png", units = "cm", width = 35, height = 20, dpi = 300, d_down)
+```

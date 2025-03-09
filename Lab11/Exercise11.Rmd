@@ -1,0 +1,530 @@
+---
+title: "Structural Variant Analysis"
+author: "Carolina Lobato"
+date: "2022-01-14"
+output: html_document
+---
+
+# 1. Introduction
+
+The aim of this tutorial is to call structural variants (SVs) in a human
+genome by identifying discordant paired-end read mappings and split
+reads.
+
+Discordant paired-end alignments conflict with the alignment patterns that
+we expect (i.e., concordant alignments) for the DNA library and
+sequencing technology we have used.
+
+For example, given a \~500bp paired-end Illumina library, we expect
+pairs to align in F/R orientation and we expect the ends of the pair to
+align roughly 500bp apart. Pairs that align too far apart suggest a
+potential deletion in the DNA sample's genome. As you may have guessed,
+the trick is how we define what "too far" is this depends on the
+fragment size distribution of the Data.
+
+Split-read alignments contain SV breakpoints and consequently, then DNA
+sequences up- and down-stream of the breakpoint align to disjoint
+locations in the reference genome.
+
+DELLY is a tool that can discover, genotype and visualize deletions,
+tandem duplications, inversions and translocations at single-nucleotide
+resolution in short-read massively parallel sequencing Data. It uses
+paired- end and split-reads.
+
+# 2. Mapping with BWA-MEM
+
+Reads were mapped to the soft-masked GRCh38 assembly of the human genome
+(Ensembl release 102
+<ftp://ftp.ensembl.org/pub/release-102/fasta/homo_sapiens/dna/>).
+
+```{bash eval=FALSE, include=FALSE}
+bwa mem <REF_ASSEMBLY.fa> \
+Reads_Forward.fq \
+Reads_Reverse.fq \
+-M -t 2 | samtools view -S -b -
+```
+
+1.  Download the bam files from the teach center
+2.  Download the reference assembly
+
+Download the reference assembly
+
+```{bash eval=FALSE, include=FALSE}
+ftp -a ftp.ensembl.org
+```
+
+> Not `ftp.ensemble.org` ! `tnftp` or `ftp` Internet file transfer
+> program `-a` Causes tnftp to bypass normal login procedure, and use an
+> anonymous login instead.
+
+In `ftp`:
+
+```{ftp eval=FALSE, include=FALSE}
+cd pub/release-102/fasta/homo_sapiens/dna
+ls
+# get Homo_sapiens.GRCh38.dna_sm.toplevel.fa.gz
+get Homo_sapiens.GRCh38.dna_sm.chromosome.20.fa.gz
+close
+exit
+```
+
+```{bash}
+cd Lab11
+mv Homo_sapiens.GRCh38.dna_sm.chromosome.20.fa.gz Data/
+```
+
+Build docker image
+
+```{bash eval=FALSE, include=FALSE}
+docker build . -t statgen
+```
+
+Run docker container
+
+```{bash eval=FALSE, include=FALSE}
+docker run -it \
+  -w /opt \
+  -v $PWD:/opt \
+  statgen
+```
+
+```{bash}
+mv Homo_sapiens.GRCh38.dna_sm.chromosome.20.fa.gz Data/
+```
+
+Run in docker
+
+```{bash}
+gunzip -c Data/Homo_sapiens.GRCh38.dna_sm.chromosome.20.fa.gz | bgzip  > Data/Homo_sapiens.GRCh38.dna_sm.chromosome.20.fa.bgz
+```
+
+```{bash}
+gunzip Data/Homo_sapiens.GRCh38.dna_sm.chromosome.20.fa.gz 
+```
+
+3.  Index the reference sequence
+
+```{bash}
+# REF_ASSEMBLY=Homo_sapiens.GRCh38.dna_sm.chromosome.20.fa.bgz
+REF_ASSEMBLY=Homo_sapiens.GRCh38.dna_sm.chromosome.20.fa
+samtools faidx Data/$REF_ASSEMBLY
+```
+
+HERE 4. Use samtools to sort and index the bam files.
+
+```{bash}
+mkdir -p output
+for FILE in Data/NA*.bam; do
+  OUTPUT=$(echo $FILE | sed "s/\.bam/\.sorted\.bam/" | sed "s/Data/output/")
+  samtools sort $FILE -o $OUTPUT
+  samtools index $OUTPUT
+done
+```
+
+# 3. Characterizing the fragment size distribution
+
+In order to identify discordant mappings of paired-end reads, we must
+first characterize the insert size distribution with picard and with
+samtools.
+
+> From the referenced tutorial:
+
+> What means the insert size distribution? The insert size describes the
+> distribution of the size of concordant alignments (i.e., they align in
+> the expected orientation)
+
+> How can we use the fragment size distribution in SV detection? We can
+> use the size distribution (mean and standard deviation) to decide the
+> size threshold for discordant alignments
+
+5.  Using picard: The following commands extract pairs of forward and
+    reverse reads from a BAM file and compute the mean and standard
+    deviation of the insert size.
+
+```{bash}
+for FILE in output/NA*.bam; do
+  OUTPUT=$(echo $FILE | sed "s/\.sorted\.bam//")
+  PicardCommandLine CollectInsertSizeMetrics \
+    I=$FILE \
+    O=${OUTPUT}_insert_size_metrics.txt \
+    H=${OUTPUT}_insert_size_histogram.pdf
+done
+```
+
+a.  Use R to visualize the insert size distribution. Repeat for all
+    remaining samples. \> xreader
+    output/NA12878_chr20_insert_size_histogram.pdf \> xreader
+    output/NA12891_chr20_insert_size_histogram.pdf \> xreader
+    output/NA12892_chr20_insert_size_histogram.pdf
+
+```{r}
+library(ggplot2)
+for (sample in c("NA12878", "NA12891", "NA12892")) {
+  file <- sprintf("output/%s_chr20_insert_size_metrics.txt", sample)
+  df <- read.csv(file, header=F, skip=11, sep="\t")
+  p <- ggplot(df, aes(V1, V2)) +
+    geom_bar(stat="identity") +
+    scale_y_log10()
+  print(p)
+}
+```
+
+b.  What is the mean and standard deviation of the insert size? Is it
+    the same for all samples?
+
+```{bash}
+for FILE in output/NA*metrics.txt; do
+  echo $FILE
+  cat $FILE | grep -A 1 "MEAN_INSERT_SIZE" | awk '{print $6}'
+  cat $FILE | grep -A 2 "STANDARD_DEVIATION" | awk '{print $7}'
+done
+```
+
+```{r}
+for (sample in c("NA12878", "NA12891", "NA12892")) {
+  file <- sprintf("output/%s_chr20_insert_size_metrics.txt", sample)
+  df <- read.csv(file, header=F, skip=11, sep="\t")
+  insert_mean <- sum(df$V1 * df$V2) / sum(df$V2)
+  insert_sd <- sqrt(sum((df$V1 - insert_mean)^2 * df$V2) / (sum(df$V2) - 1))
+  print(sprintf("Mean: %.2f      SD: %.2f" , insert_mean, insert_sd))
+}
+```
+
+> NA12878_chr20 Mean: 318.406961 Standard Deviation: 75.445387
+
+> NA12891_chr20 Mean: 301.421422 Standard Deviation: 65.277149
+
+> NA12892_chr20 Mean: 305.910449 Standard Deviation: 65.309425
+
+> Tutorial: In the 3 samples the mean is around 200-250 bp No python
+> script.
+
+6.  Using samtools: The ninth column of a SAM file, observed Template
+    LENgth (TLEN), can be used as an approximate of the fragment length.
+    Let us obtain the insert sizes using only the first pair of properly
+    mapped pairs (flag -f66, see Decoding SAM flags).
+
+```{bash}
+for FILE in output/NA*sorted.bam; do
+  OUTPUT=$(echo $FILE | sed "s/\.sorted\.bam//")
+  samtools view -f66 $FILE | cut -f 9 > ${OUTPUT}_insert_sizes.txt
+done
+```
+
+a.  Why are there negative values? \> TLEN: The number of bases covered
+    by the reads of the same fragment. Plus/minus means the current read
+    is the leftmost/rightmost read. E.g. compare first and last lines
+
+b.  Use R to visualize the distribution of insert sizes and get some
+    summary statistics
+
+```{r}
+library(ggplot2)
+for (sample in c("NA12878", "NA12891", "NA12892")) {
+  file <- sprintf("output/%s_chr20_insert_sizes.txt", sample)
+  x <- abs(read.csv(file, header=F)$V1)
+  p <- ggplot(Data.frame(x), aes(x)) +
+    geom_histogram(bins = 100) +
+    scale_y_log10()
+  print(p)
+}
+```
+
+```{r}
+for (sample in c("NA12878", "NA12891", "NA12892")) {
+  file <- sprintf("output/%s_chr20_insert_sizes.txt", sample)
+  x <- abs(read.csv(file, header=F)$V1)
+  print(sprintf("Mean: %.2f      SD: %.2f" , mean(x), sd(x)))
+}
+```
+
+7.  The insert size estimation using this method has a limitation: it
+    merely reflects the distance between the mappings. In particular,
+    the method may provide misleading estimates for RNA-seq Data (Why?).
+    \> Because RNA or cDNA reads no longer contains introns.
+
+8.  Exclude very large, unlikely inserts and recalculate mean and
+    standard deviation.
+
+```{r}
+for (sample in c("NA12878", "NA12891", "NA12892")) {
+  file <- sprintf("output/%s_chr20_insert_sizes.txt", sample)
+  x <- abs(read.csv(file, header=F)$V1)
+  # x <- x[x < quantile(x, .999)]  # Remove top 0.1%
+  x <- x[x < quantile(x, .95)]  # Remove top 5%
+  print(sprintf("Mean: %.2f      SD: %.2f" , mean(x), sd(x, T)))
+}
+```
+
+For each input BAM file, DELLY computes the default read-pair
+orientation and the paired-end insert size distribution characterized by
+the median and standard deviation of the library. Based on these
+parameters, DELLY then identifies all discordantly mapped read-pairs
+that either have an abnormal orientation or an insert size greater than
+the expected range. DELLY hereby focuses on uniquely mapping paired-ends
+and the default insert size cutoff is **three standard deviations from
+the median insert size** (Rausch et. al).
+
+9.  Based on the file generated for sample NA12891 in 5, what would you
+    say DELLY will use as a threshold for discordant mappings?
+
+-   Hint: you will need to pipe the file into awk to print the column
+    number corresponding to the MEDIAN_INSERT_SIZE and
+    STANDARD_DEVIATION
+
+```{bash}
+for FILE in output/NA12891*metrics.txt; do
+  echo $FILE
+  cat $FILE | grep -A 1 "MEDIAN_INSERT_SIZE" | awk '{print $1}'
+  cat $FILE | grep -A 2 "STANDARD_DEVIATION" | awk '{print $7}'
+done
+```
+
+> Threshold for discordant mapping: MEDIAN_INSERT_SIZE + 3 \*
+> STANDARD_DEVIATION = 495.831
+
+```{r}
+300+3*65.277
+```
+
+Test
+
+```{r}
+file <- "output/NA12891_chr20_insert_sizes.txt"
+x <- abs(read.csv(file, header=F)$V1)
+x <- x[x < 495.831]
+print(sprintf("Mean: %.2f      SD: %.2f" , mean(x), sd(x, T)))
+```
+
+# 4. SV detection
+
+Now we will call germline SVs on each sample. The steps are adapted from
+the DELLY README file.
+
+10. The notation of the chromosome will cause an error. Change the first
+    line in the reference file
+    `Homo_sapiens.GRCh38.dna_sm.chromosome.20.fa` from `>20` to `>chr20`
+    using unix's `sed` command.
+
+```{bash eval=FALSE, include=FALSE}
+gunzip Data/Homo_sapiens.GRCh38.dna_sm.chromosome.20.fa.gz
+```
+
+```{bash}
+sed "s/>20/>chr20/" Data/Homo_sapiens.GRCh38.dna_sm.chromosome.20.fa > Data/Homo_sapiens.GRCh38.dna_sm.chromosome.chr20.fa
+head -2 Data/Homo_sapiens.GRCh38.dna_sm.chromosome.chr20.fa
+samtools faidx Data/Homo_sapiens.GRCh38.dna_sm.chromosome.chr20.fa
+```
+
+11. For each sample, type:
+
+```{bash}
+REF_ASSEMBLY=Data/Homo_sapiens.GRCh38.dna_sm.chromosome.chr20.fa
+for FILE in output/NA128*sorted.bam; do
+  OUTPUT=$(echo $FILE | sed "s/\.sorted\.bam//")
+  docker run \
+    -w /opt \
+    -v $PWD:/opt \
+    statgen \
+    delly call \
+      -g $REF_ASSEMBLY \
+      -o ${OUTPUT}_SV.bcf \
+      -x Data/human.hg38.excl.tsv \
+      $FILE
+done
+```
+
+-   If you omit the reference sequence, DELLY skips the split-read
+    analysis. To save runtime it is advisable to exclude telomere and
+    centromere regions. For human, DELLY ships with such an exclude
+    list. For the human genome, the file is called `human.hg38.excl.tsv`
+    and can be downloaded from the teach-center.
+-   .bcf files are compressed .vcf files. DELLY's output files follow
+    the vcf specification. All fields in the file are explained in the
+    header.
+-   To look at the output you can use bcftools:
+
+```{bash eval=FALSE, include=FALSE}
+docker run -it \                                                                                         
+  -w /opt \
+  -v $PWD:/opt \
+  statgen
+
+bcftools view output/NA12891_chr20_SV.bcf | less -S
+```
+
+12. generate a file with
+
+```{bash}
+touch output/delly_metrics.txt
+```
+
+Pipe the following outputs of each bcf file into the file. Don't forget
+to use `>>` to append. a) the file name b) the number of SVs did you
+find in each sample c) the number of each type of SV (e.g., deletions,
+duplications, inversions) in each sample
+
+```{bash}
+OUTPUT=output/delly_metrics.txt
+rm $OUTPUT
+touch $OUTPUT
+for FILE in output/*SV.bcf; do
+  echo $FILE >> $OUTPUT
+  bcftools view --no-header $FILE | grep -v "^#" | wc -l >> $OUTPUT
+  bcftools view --no-header $FILE | grep -v "^#" | cut -f 5 | sort | uniq -c >> $OUTPUT
+done
+cat $OUTPUT
+```
+
+## 4.1 Merging SV calls
+
+13. Merge the SVs from multiple samples into a single, unified site list
+    with DELLY:
+
+```{bash}
+echo $(ls -1 output/*SV.bcf | tr '\n' ' ')
+docker run \
+  -w /opt \
+  -v $PWD:/opt \
+  statgen \
+  delly merge \
+    -m 500 \
+    -n 1000000 \
+    -o output/SVs_merged.bcf \
+    -b 500 \
+    -r 0.5 $(ls -1 output/*SV.bcf | tr '\n' ' ')
+```
+
+`-m` and `-n` are the minimum and maximum SV sizes. `-b` is the maximum
+breakpoint offset. `-r` is the minimum reciprocal overlap. Replace
+`FN%d.bcf` with the files we generated in 11.
+
+14. Examine the output with `bcftools`. Pipe the following outputs of
+    the merged bcf file into `delly_metrics.txt`.
+
+<!-- -->
+
+a)  the file name
+b)  the number of SVs
+c)  the number of each type of SV (e.g., deletions, duplications,
+    inversions)
+
+```{bash}
+OUTPUT=output/delly_metrics.txt
+for FILE in output/SVs_merged.bcf; do
+  echo $FILE >> $OUTPUT
+  bcftools view --no-header $FILE | grep -v "^#" | wc -l >> $OUTPUT
+  bcftools view --no-header $FILE | grep -v "^#" | cut -f 5 | sort | uniq -c >> $OUTPUT
+done
+```
+
+# 4.2 Re-genotyping
+
+15. Genotype this merged SV site list across all samples. Name the
+    output .bcf files `NA12878_geno.bcf`, `NA12891_geno.bcf`, and
+    `NA12892_geno.bcf`.
+
+```{bash}
+for FILE in output/NA*.bam; do
+  OUTPUT=$(echo $FILE | sed "s/_chr20.sorted.bam//")
+  docker run \
+  -w /opt \
+  -v $PWD:/opt \
+  statgen \
+  delly call -g Data/Homo_sapiens.GRCh38.dna_sm.chromosome.chr20.fa \
+    -v output/SVs_merged.bcf \
+    -o ${OUTPUT}_geno.bcf \
+    -x Data/human.hg38.excl.tsv \
+    $FILE
+done
+```
+
+16. Examine the output files with bcftools. You should see information
+    on the genotype for each individual.
+
+```{bash}
+for FILE in output/NA*geno.bcf; do
+  echo bcftools view $FILE | less -S
+done
+```
+
+## 4.3 Merging the re-genotyped calls
+
+17. Merge all re-genotyped samples to get a single .bcf output file
+    using `bcftools` merge
+
+```{bash}
+bcftools merge \
+  -O b \
+  -o output/output.bcf \
+  output/NA12878_geno.bcf output/NA12891_geno.bcf output/NA12892_geno.bcf
+```
+
+-   `-O` b indicates that the output should be a .bcf file.
+
+18. Index the resulting .bcf file and create a .vcf file for
+    visualization:
+
+```{bash}
+bcftools index output/output.bcf
+bcftools view output/output.bcf > output/output.vcf
+docker run \
+  -w /opt \
+  -v $PWD:/opt \
+  statgen \
+  bgzip -c output/output.vcf > output/output.vcf.gz
+docker run \
+  -w /opt \
+  -v $PWD:/opt \
+  statgen \
+  tabix -fp vcf output/output.vcf.gz
+```
+
+# 5 Setting up IGV for SV visualization
+
+19. Launch IGV and load the merged SV calls and the mapping files for
+    the individual samples using `File -> Load from File`
+
+```{bash eval=FALSE, include=FALSE}
+igv
+```
+
+20. Navigate to the following location to see a deletion:
+    `chr20:63,090,172-63,097,143`.
+
+21. Load the .bam files.
+
+You can try to configure IGV such that we can more clearly see the
+alignments that support the SV prediction(s). - Color the alignments by
+insert size and pair orientation (right click on reads for coloring
+options). \> xviewer output/igv_question21.png
+
+## 5.1 Explore the SVs
+
+22. Is the variant located at `chr20:52,142,500-52,145,000` found in any
+    member of the trio? If so which genotype do they have? \> Yes,
+    NA128878 and NA128891. Both are Homozygous for the alternative
+    allele. While the remainig sample is heterozygous.
+
+23. How would you locate all deletions in which at least one member of
+    the trio is
+
+<!-- -->
+
+a)  homozygous for an alternate allele \> Find 1/1
+
+```{bash}
+# TODO
+```
+
+b)  heterozygous for an alternate allele and \> Find 0/1
+
+```{bash}
+# TODO
+```
+
+c)  homozygous for the reference allele? \> Find 0/0
+
+```{bash}
+# TODO: delly
+```

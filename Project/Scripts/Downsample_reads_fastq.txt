@@ -1,0 +1,13 @@
+A very easy tool is seqtk which also works under conda (https://anaconda.org/bioconda/seqtk).
+
+There are 2 possible commands where it seems that the first one uses up more RAM, so if you get into troubles with that, use the second.
+
+seqtk sample IonXpress_013.fastq 10000000 > test.fastq
+
+You start with "seqtk sample" then the fastq file, the number of reads you want to get and the output file.
+
+seqtk sample -2 IonXpress_013.fastq 10000000 > test.fastq
+
+Here just the -2 is different. It reads the input twice (so twice as slow). In the first pass, it finds the sampled read indices. In the second pass, it outputs reads at the stored indices.
+
+I just downsampled my data and as suggested online for paired reads I used an additional argument -s100 which defines the random seed(100 is just the number of the chosen seed). This way you have the same "randomness" on the paired reads.

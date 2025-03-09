@@ -1,0 +1,282 @@
+---
+title: "ATAC-seq Data Analysis"
+author: "Carolina Lobato"
+date: "2022-12-03"
+output: html_document
+---
+
+# Statistical Genomics: Exercise 7
+
+## 2. Pre-processing ATAC-seq Data
+
+```{bash}
+for INPUT in Data/*chr22.bam; do
+OUTPUT=$(echo $INPUT | sed "s/\.bam/\.newname\.bam/" |
+sed "s/Data\//new_directory\//")
+echo -e "input: $INPUT"
+echo -e "output: $OUTPUT\n"
+done
+```
+
+### 2.1. Indexing BAM-formatted files
+
+##### 1. Run the command for each of the BAM files in Table 1.
+
+```{bash}
+mkdir -p Outputs/sort
+for INPUT in Data/*chr22.bam; do
+  OUTPUT=$(echo $INPUT | sed "s/\.bam/\.sorted\.bam/" | sed "s/Data\//Outputs/sort\//")
+  Tools/samtools-1.16.1/samtools sort $INPUT -o $OUTPUT
+  Tools/samtools-1.16.1/samtools index $OUTPUT
+done
+```
+
+Use samtools view to count the number of mapped reads (not the number of mappings!):
+
+```{bash}
+for INPUT in Data/*chr22.bam; do
+Tools/samtools-1.16.1/samtools view -c -F 260 $INPUT
+done
+```
+
+##### 2. What does -F 260 mean? How many reads are in the files?
+
+> F 260 asks not to output unmapped reads and reads which are not primary alignment (best quality).
+
+### 2.2. Filtering uninformative reads
+
+In addition, you should also remove the reads with low mapping quality and those that are not properly paired. A pair of reads (R 1 , R 2 ) arising from the same fragment are properly paired if and only if:
+
+• R 1 is on the forward strand and R 2 is on the reverse strand
+
+• R 2 is on the forward strand and R 1 is on the reverse strand
+
+##### 3. Run the command for each of the output BAM files from 1. How many mapped read pairs are left in each case?
+
+```{bash}
+mkdir -p Outputs/filter
+for INPUT in Outputs/sort/*sorted.bam; do
+  OUTPUT=$(echo $INPUT | sed "s/\.sorted\.bam/\.filter\.bam/" | sed "s/Outputs\/sort\//Outputs\/filter\//")
+  Tools/samtools-1.16.1/samtools view -q 30 -f 2 -b -h $INPUT > $OUTPUT
+done
+```
+
+```{bash}
+for INPUT in Outputs/filter/*filter.bam; do
+Tools/samtools-1.16.1/samtools view -c -F 260 $INPUT
+done
+```
+
+### 2.3. Filtering duplicate reads
+
+##### 4. Run the command for each of the output BAM files from 3. Index the resulting BAM files.
+
+```{bash}
+mkdir -p Outputs/picard
+for INPUT in Outputs/filter/*filter.bam; do
+ OUTPUT=$(echo $INPUT | sed "s/\.filter\.bam/\.filter2\.bam/" | sed "s/Outputs\/filter\//Outputs\/picard\//")
+java -jar Tools/picard.jar MarkDuplicates \
+--REMOVE_DUPLICATES true \
+-I $INPUT \
+-O $OUTPUT \
+-M Outputs/picard/dup_metrics.txt
+done
+```
+
+```{bash}
+for INPUT in Outputs/picard/*filter2.bam; do
+  Tools/samtools-1.16.1/samtools index $INPUT
+done
+```
+
+• How many read pairs are duplicates?
+
+> 184010
+
+### 2.4. Checking the size of the fragments
+
+##### 5. Run the command for each of the output BAM files from 4.
+
+```{bash}
+for INPUT in Outputs/picard/*filter2.bam; do
+  OUTPUT=$(echo $INPUT | sed "s/\.bam//")
+  java -jar Tools/picard.jar CollectInsertSizeMetrics \
+  -I $INPUT \
+  -O $OUTPUT.txt \
+  -H $OUTPUT.pdf
+done
+```
+
+##### 6. Why do the reads peak around nucleosomes, are there no fragments with lengths in between?
+
+> Tn5 transposase preferentially cleaves regions of accessible chromatin while simultaneously ligating sequencing adapters to the ends of the resulting DNA fragments. But because Tn5 is random a lot of small peaks will appear in the beggining (not the usual spacing between nucleosomes).
+
+## 3. Peak calling
+
+##### 7. Call peaks on each of the output BAM files from 4.
+
+```{bash}
+mkdir -p Outputs/macs2
+for INPUT in Outputs/picard/*filter2.bam; do
+  OUTPUT=$(echo $INPUT | sed "s/\.bam//" | sed "s/Outputs\/picard\///") 
+ ~/miniconda3/envs/StatGen/bin/macs2 callpeak \
+ -t $INPUT \
+ -n $OUTPUT \
+ --outdir Outputs/macs2 \
+ -f BAMPE \
+ -g 2.9e9 \
+ --nomodel \
+ --call-summits
+ done
+```
+
+##### 8. How many peaks do you obtain for each replicate? Visualize (e.g., with R) using a bar chart.
+
+```{bash}
+for INPUT in Outputs/macs2/*_peaks.narrowPeak; do
+wc -l $INPUT
+done
+```
+
+```{r}
+df = Data.frame(replicates = c("Lab7/Data/ENCFF691PRG", "Lab7/Data/ENCFF726MIS", "Lab7/Data/ENCFF815ABY"), peaks = c(2628, 2906, 2921))
+
+barplot(peaks ~ replicates, df)
+```
+
+### 3.1. Finding peaks that overlap across replicates
+
+##### 9. Merge the peak sets resulting from 7 for a distance of d= 1, 25, 50, 100 bp. Save the outputs as MergedPeakFile_d.txt . Count the number of resulting peaks.
+
+```{bash}
+sudo apt install samtools
+perl Tools/homer/configureHomer.pl -install
+```
+
+```{bash}
+mkdir -p Outputs/homer
+for D in 1 25 50 100; do
+  Tools/homer/bin/mergePeaks \
+  -d $D Outputs/macs2/ENCFF691PRG_chr22.filter2_peaks.narrowPeak Outputs/macs2/ENCFF726MIS_chr22.filter2_peaks.narrowPeak Outputs/macs2/ENCFF815ABY_chr22.filter2_peaks.narrowPeak > Outputs/homer/MergedPeakFile_$D.txt
+done
+```
+
+```{bash}
+for INPUT in Outputs/homer/*.txt; do
+wc -l $INPUT
+done
+```
+
+##### 10. Why do the number of peaks reduce as d increases?
+
+> Because the higher the distance, the higher is the overlap that merges peaks together in a set.
+
+##### 11. Generate two bed files from the merged file for d = 50 . This file will contain three columns with values: chrNr, start, end. One file will consist of the peaks present in only one of the original peak sets; the other will consist of peaks present in all three of the original peak sets. With awk , you can extract a conditional as follows:
+
+```{bash}
+awk -F "|" '{if (NR>1 && NF==1) {print } }' Outputs/homer/MergedPeakFile_50.txt \
+  | cut -f 2,3,4 > Outputs/homer/peaks_1.bed
+echo "1:"; head Outputs/homer/peaks_1.bed
+  
+awk -F "|" '{if (NF==3) {print } }' Outputs/homer/MergedPeakFile_50.txt \
+  | cut -f 2,3,4 > Outputs/homer/peaks_all.bed
+echo "ALL:"; head Outputs/homer/peaks_all.bed
+```
+
+• How many peaks do the each of the resulting consensus peak sets consist of?
+
+```{bash}
+for INPUT in Outputs/homer/*.bed; do
+wc -l $INPUT
+done
+```
+
+### 3.2. Visualization with deepTools
+
+12\. Execute the following command for each of the BAM files from 4:
+
+```{bash}
+pip install deepTools
+```
+
+```{bash}
+mkdir Outputs/deepTools
+for INPUT in Outputs/picard/*filter2.bam; do
+  OUTPUT=$(echo $INPUT | sed "s/\.bam//" | sed "s/Outputs\/picard\//Outputs\/deepTools\//")
+~/miniconda3/envs/StatGen/bin/bamCoverage \
+--binSize 10 \
+--extendReads \
+--ignoreDuplicates \
+--normalizeUsing RPKM \
+--bam $INPUT \
+--outFileFormat bigwig \
+--outFileName $OUTPUT \
+--numberOfProcessors 2
+done
+```
+
+```{bash}
+~/miniconda3/envs/StatGen/bin/computeMatrix reference-point -S Outputs/deepTools/ENCFF691PRG_chr22.filter2_bigwig Outputs/deepTools/ENCFF726MIS_chr22.filter2_bigwig Outputs/deepTools/ENCFF815ABY_chr22.filter2_bigwig \
+-R Outputs/homer/peaks_all.bed \
+--beforeRegionStartLength=1500 \
+--afterRegionStartLength=1500 \
+--referencePoint=center \
+-o Outputs/deepTools/matrix_all.gz
+
+~/miniconda3/envs/StatGen/bin/computeMatrix reference-point -S Outputs/deepTools/ENCFF691PRG_chr22.filter2_bigwig Outputs/deepTools/ENCFF726MIS_chr22.filter2_bigwig Outputs/deepTools/ENCFF815ABY_chr22.filter2_bigwig \
+-R Outputs/homer/peaks_1.bed \
+--beforeRegionStartLength=1500 \
+--afterRegionStartLength=1500 \
+--referencePoint=center \
+-o Outputs/deepTools/matrix_1.gz
+```
+
+##### 13. Generate a heatmap visualizing the ATAC-seq signal for both of the consensus peaks. plotHeatmap has several [parameters](https://deepTools.readthedocs.io/en/develop/content/Tools/plotHeatmap.html) that you can adjust to beautify the image.
+
+```{bash}
+~/miniconda3/envs/StatGen/bin/plotHeatmap \
+--matrixFile Outputs/deepTools/matrix_all.gz \
+--heatmapWidth 10 \
+--outFileName Outputs/deepTools/heatmap_all.png
+```
+
+```{bash}
+~/miniconda3/envs/StatGen/bin/plotHeatmap \
+--matrixFile Outputs/deepTools/matrix_1.gz \
+--heatmapWidth 10 \
+--outFileName Outputs/deepTools/heatmap_1.png
+```
+
+##### 14. What do the rows and columns in the heatmap represent?
+
+> Columns in the heatmaps represent the different replicates and the rows represent each consensus peaks in the bed file.
+
+##### 15. What do the colors in the heatmap correspond to?
+
+> The colors in the heatmap represent the read density (normalized counts).
+
+##### 16. Do you expect or see a difference in the samples?
+
+> No, because they are replicates.
+
+##### 17. What can you say about the differences in the overall png files?
+
+> In one image we can see the reads that are present in each of the replicates while in th other we see the reads that are shared between replicates.
+
+### 3.3. Motif analysis
+
+##### 18. Run a motif analysis of the consensus peaks supported by at least three peaks in the original peak sets:
+
+```{bash}
+Tools/homer//configureHomer.pl -list
+Tools/homer//configureHomer.pl -install hg38
+```
+
+```{bash}
+export PATH=$PATH:$PWD/Tools/homer/bin
+findMotifsGenome.pl Outputs/homer/peaks_all.bed hg38 Outputs/homer \
+-size 200 \
+-mask
+```
+
+##### 19. Explore the generated html file
