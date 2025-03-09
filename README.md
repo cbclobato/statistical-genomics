@@ -19,7 +19,7 @@ The course provides knowledge of high throughput array and sequencing technologi
 **Lab 9** Hi-C \
 **Lab 10** Genetic variation: SNPs and INDELs \
 **Lab 11** Genetic variation: Structural and copy number variation \
-**Final Project** \
+**Final Project**
 
 
 ## Requirements
